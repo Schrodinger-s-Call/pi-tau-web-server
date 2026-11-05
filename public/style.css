@@ -4267,3 +4267,41 @@ body.viewing-file #launcher {
 .file-preview-content .message-content { max-width: none; }
 .file-tab .live-tab-title::before { content: '▤ '; }
 .file-item:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: -2px; }
+
+.nexus-card {
+  margin: 16px 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  max-width: 900px;
+  overflow: hidden;
+}
+.nexus-card h3 { margin: 0 0 12px; }
+.nexus-card fieldset { border: 0; padding: 8px 0; min-width: 0; }
+.nexus-card legend { font-weight: 600; }
+.nexus-option { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
+.nexus-card input[type="text"] {
+  width: 100%; box-sizing: border-box; padding: 8px; margin: 4px 0;
+  background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px;
+}
+.nexus-card button {
+  padding: 7px 14px; margin: 8px 8px 0 0; cursor: pointer;
+  color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px;
+}
+.nexus-card button:disabled { cursor: default; opacity: .55; }
+.nexus-status { color: var(--text-secondary); font-size: 12px; margin-top: 8px; }
+.nexus-chart { display: block; width: 100%; height: auto; max-height: 650px; }
+.nexus-grid { fill: none; stroke: var(--border); stroke-width: 1; }
+.nexus-radar-area { fill: var(--accent); fill-opacity: .2; stroke: var(--accent); stroke-width: 2; }
+.nexus-dot { fill: var(--accent); }
+.nexus-axis { fill: var(--text-primary); font-size: 13px; }
+.nexus-scale { fill: var(--text-secondary); font-size: 10px; }
+.nexus-flow { fill: none; stroke: var(--accent); stroke-opacity: .3; }
+.nexus-flow:hover { stroke-opacity: .65; }
+.nexus-chart-scroll { overflow-x: auto; }
+.nexus-chart-scroll svg { min-width: 650px; max-height: none; }
+.nexus-card .table-wrapper { max-height: 320px; overflow: auto; }
+@media (max-width: 768px) {
+  .nexus-card { padding: 12px; }
+}

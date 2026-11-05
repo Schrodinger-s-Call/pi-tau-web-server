@@ -11,6 +11,7 @@ import { modelMeta, modelRef, normalizeModelList, searchModels } from './model-m
 import { DialogHandler, type DialogRequest } from './dialogs.js';
 import { SessionSidebar, type SidebarProject, type SidebarSession } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
+import { assistantText } from './nexus-data.js';
 import { FilePreview } from './file-preview.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { setupLauncherPanel } from './launcher-panel.js';
@@ -264,6 +265,46 @@ const filePreview = new FilePreview(() => renderLiveTabs(), path => fileBrowser.
 fileBrowser.onPreview = path => {
   launcherPanel.hide();
   if (viewingActiveSession && activeLiveSessionId) void filePreview.open(path, activeLiveSessionId);
+};
+
+const nexusSending = new Set<string>();
+messageRenderer.nexusContext = message => {
+  const sessionId = activeLiveSessionId;
+  if (!viewingActiveSession || !sessionId) return undefined;
+  return {
+    sessionId,
+    canSubmit: () => {
+      if (!viewingActiveSession || activeLiveSessionId !== sessionId || !messagesContainer.contains(message)) return false;
+      for (let next = message.nextElementSibling; next; next = next.nextElementSibling) {
+        if (next.matches('.message.user, .message.assistant')) return false;
+      }
+      return true;
+    },
+    send: async (owner, text) => {
+      if (owner !== activeLiveSessionId || !viewingActiveSession) throw new Error('请先切回此卡片所属的会话。');
+      if (state.isStreaming || sessionHasPendingWork(owner)) throw new Error('请等待当前任务完成后再提交。');
+      if (wsClient.ws?.readyState !== WebSocket.OPEN) throw new Error('连接已断开，请重新连接后重试。');
+      nexusSending.add(owner);
+      try {
+        const response = await fetch('/api/rpc', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'prompt', sessionId: owner, message: text }),
+          signal: AbortSignal.timeout(20000),
+        });
+        const result = await response.json();
+        if (result.delivery === 'uncertain') return 'uncertain';
+        if (!result.success) throw new Error(result.error || '发送失败，请重试。');
+        return 'accepted';
+      } catch (error) {
+        // Network failures do not prove the server rejected the prompt.
+        if (error instanceof TypeError || error instanceof SyntaxError || (error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name))) return 'uncertain';
+        throw error;
+      } finally {
+        nexusSending.delete(owner);
+        if (activeLiveSessionId === owner) flushQueue();
+      }
+    },
+  };
 };
 
 document.getElementById('mode-toggle')?.addEventListener('click', () => filePreview.hide());
@@ -1218,11 +1259,9 @@ function handleMessageStart(message: AppMessage) {
 }
 
 function getMessageText(message: AppMessage) {
+  if (message.role === 'assistant') return assistantText(message.content);
   if (typeof message.content === 'string') return message.content;
-  if (Array.isArray(message.content)) {
-    return message.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  }
-  return '';
+  return (message.content || []).filter(block => block.type === 'text').map(block => block.text || '').join('\n');
 }
 
 function getMessageThinking(message: AppMessage) {
@@ -1261,6 +1300,8 @@ function handleMessageUpdate(event: AppEvent) {
   }
 }
 
+const nexusFinalText = new WeakMap<Element, string>();
+
 function handleMessageEnd(message: AppMessage) {
   if (message?.role === 'toolResult') {
     if (message.toolCallId) {
@@ -1272,10 +1313,17 @@ function handleMessageEnd(message: AppMessage) {
     return;
   }
   if (message?.role !== 'assistant') return;
+  const text = getMessageText(message);
+  const marked = text.includes('[nexus-ui]');
+  if (!currentStreamingElement && marked && message.timestamp !== undefined) {
+    let previous = messagesContainer.lastElementChild;
+    while (previous && !previous.matches('.message.user, .message.assistant')) previous = previous.previousElementSibling;
+    if (previous?.getAttribute('data-nexus-timestamp') === String(message.timestamp) && nexusFinalText.get(previous) === text) return;
+  }
   rememberToolDefinitions(message);
   let finishedElement = currentStreamingElement;
   if (!currentStreamingElement) {
-    finishedElement = messageRenderer.renderAssistantMessage(message, false, true);
+    finishedElement = messageRenderer.renderAssistantMessage(message, false, false);
   }
   if (currentStreamingElement) {
     finishedElement = currentStreamingElement;
@@ -1284,14 +1332,8 @@ function handleMessageEnd(message: AppMessage) {
     // before finalizing.
     const finalText = getMessageText(message);
     const finalThinking = getMessageThinking(message);
-    if (finalText && finalText.length >= currentStreamingText.length) {
-      currentStreamingText = finalText;
-      messageRenderer.updateStreamingMessage(currentStreamingElement, currentStreamingText);
-    }
-    if (finalThinking && finalThinking.length >= currentStreamingThinking.length) {
-      currentStreamingThinking = finalThinking;
-      messageRenderer.updateStreamingThinking(currentStreamingElement, currentStreamingThinking);
-    }
+    currentStreamingText = finalText;
+    currentStreamingThinking = finalThinking;
 
     // Pass usage info for cost display
     const usage = message?.usage || null;
@@ -1312,6 +1354,11 @@ function handleMessageEnd(message: AppMessage) {
     }
     updateContextPill();
     showNewMessageBadge();
+  }
+
+  if (finishedElement && marked && message.timestamp !== undefined) {
+    finishedElement.dataset.nexusTimestamp = String(message.timestamp);
+    nexusFinalText.set(finishedElement, text);
   }
 
   // Hold the error until agent_settled: an auto-retry may still replace this
@@ -1946,7 +1993,7 @@ function abortState(sessionId: string) {
 }
 
 function sessionHasPendingWork(sessionId: string) {
-  return queuedPrompts.has(sessionId) || isCompacting(sessionId) || pendingInteractionCount(sessionId) > 0 || (abortState(sessionId) === 'stopping' && !settledWhileStopping.has(sessionId));
+  return nexusSending.has(sessionId) || queuedPrompts.has(sessionId) || isCompacting(sessionId) || pendingInteractionCount(sessionId) > 0 || (abortState(sessionId) === 'stopping' && !settledWhileStopping.has(sessionId));
 }
 
 function abortActiveSession() {

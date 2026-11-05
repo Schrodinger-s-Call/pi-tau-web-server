@@ -2,7 +2,7 @@
 // No aggressive caching since Tau connects to a live local server
 /// <reference lib="webworker" />
 
-const CACHE_NAME = 'tau-v6';
+const CACHE_NAME = 'tau-v7';
 const serviceWorker = self as unknown as ServiceWorkerGlobalScope;
 
 // Cache only the app shell on install
@@ -17,6 +17,9 @@ serviceWorker.addEventListener('install', (event: ExtendableEvent) => {
         '/state.js',
         '/themes.js',
         '/markdown.js',
+        '/markdown-fences.js',
+        '/nexus-data.js',
+        '/nexus-view.js',
         '/message-renderer.js',
         '/tool-card.js',
         '/javascript-code-block.js',

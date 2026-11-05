@@ -133,7 +133,7 @@ export function buildHistoryItems(entries: SessionHistoryEntry[]): HistoryBuildR
         items.push({ kind: 'user', content: content || '', images: images.length > 0 ? images : undefined });
       }
     } else if (msg.role === 'assistant') {
-      const blocks = (msg.content as MessageContentBlock[]) || [];
+      const blocks: MessageContentBlock[] = typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : msg.content || [];
       const textBlocks = blocks.filter((b) => b.type === 'text');
       const thinkingBlocks = blocks.filter((b) => b.type === 'thinking');
       const contentBlocks = blocks.filter((b) => b.type === 'text' || b.type === 'thinking');

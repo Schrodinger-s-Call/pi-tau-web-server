@@ -156,3 +156,13 @@ test('math and code keep their source when HTML is escaped', () => {
   assert.match(html, /data-display="false">x < y & z</);
   assert.match(html, /<code>&lt;b&gt;<\/code>/);
 });
+
+test('fences with info strings and nested examples keep their source without leaking placeholders', () => {
+  const html = renderMarkdown('Before\n```json [nexus-ui]\n{"type":"radar"}\n```\n```[nexus-ui] progress\n{"taskId":"one"}\n```\nAfter');
+  assert.doesNotMatch(html, /%%CODEBLOCK/);
+  assert.match(html, /json \[nexus-ui\]/);
+  assert.match(html, /&quot;taskId&quot;/);
+  const example = renderMarkdown('````text\n```json [nexus-ui]\n{}\n```\n````');
+  assert.equal((example.match(/code-block-wrapper/g) || []).length, 1);
+  assert.match(example, /```json \[nexus-ui\]/);
+});

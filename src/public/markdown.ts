@@ -9,6 +9,8 @@
  * use for line breaks inside table cells.
  */
 
+import { splitFences } from './markdown-fences.js';
+
 export function renderMarkdown(text: string) {
   if (!text) return '';
 
@@ -17,11 +19,12 @@ export function renderMarkdown(text: string) {
 
   // Extract code blocks first to protect them
   const codeBlocks: { lang: string; code: string }[] = [];
-  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang: string, code: string) => {
+  text = splitFences(text).map(part => {
+    if (part.kind === 'text') return part.text;
     const idx = codeBlocks.length;
-    codeBlocks.push({ lang, code: code.replace(/\n$/, '') });
+    codeBlocks.push({ lang: part.info, code: part.code });
     return `%%CODEBLOCK_${idx}%%`;
-  });
+  }).join('\n');
 
   // Extract display math after code fences (so $$ inside fences stays literal)
   // but before the line split, since $$...$$ may span multiple lines.
@@ -77,6 +80,7 @@ export function renderMarkdown(text: string) {
       flushList();
       flushBlockquote();
       const block = codeBlocks[parseInt(codeMatch[1])];
+      if (!block) { html += `<p>${escapeHtml(line)}</p>`; continue; }
       const langLabel = block.lang || 'code';
       html += `<div class="code-block-wrapper">`;
       html += `<div class="code-block-header"><span>${escapeHtml(langLabel)}</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>`;

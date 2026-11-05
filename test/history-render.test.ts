@@ -297,3 +297,9 @@ test('the context count after a compaction is the estimate until a reply reports
   assert.equal(result.lastInputTokens, 31000);
   assert.equal(result.contextTokensEstimated, false);
 });
+
+test('string assistant content remains available for marked component rendering', () => {
+  const text = '```json [nexus-ui]\n{"type":"progress","taskId":"one","status":"WAITING"}\n```';
+  const { items } = buildHistoryItems([msg({ role: 'assistant', content: text })]);
+  assert.deepEqual(items[0].content, [{ type: 'text', text }]);
+});

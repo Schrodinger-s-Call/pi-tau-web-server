@@ -4,6 +4,8 @@
 
 ### Added
 
+- Assistant replies can display Nexus UI selections, confirmations, forms, task states, radar charts, and Sankey charts. Answers return to the original conversation, and history cards remain read-only.
+
 - Set `TAU_DEFAULT_CWD` or `tau.defaultCwd` to prefill the directory when creating a new session.
 
 - Read text files in tabs beside the conversation, with Markdown preview and source views, copying, refresh, and an action to add the file to a message. File size and formatting limits keep large documents from blocking the page.

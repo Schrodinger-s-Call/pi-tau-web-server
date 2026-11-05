@@ -137,6 +137,40 @@ machine. Pass `--bind 127.0.0.1` to restrict an instance to local access.
 - Inline diff viewer for edit tool calls
 - Message queuing while the agent is working
 
+### Nexus UI components
+
+Assistant replies can include JSON fenced with `json [nexus-ui]`. Tau renders
+`select`, `confirm`, `form`, `progress`, `radar`, and `sankey` components in the
+order they appear alongside the reply. Progress also accepts `[nexus-ui] progress`
+and `json [nexus-ui] progress` headers. Ordinary code, tool output, user messages,
+and file previews do not activate components.
+
+Selections require at least one answer per question. Options marked `is_other`
+require text when selected. Forms send all answers in one ordinary user message
+through the existing session. Confirm actions with `submit: false` close the
+card without sending a message. Only the latest completed reply in the selected
+live session accepts answers, and the session must be idle and connected.
+The message draft and attachments are kept when a card sends an answer.
+
+Submitted cards cannot be clicked again. Explicitly rejected sends can be
+retried; uncertain delivery asks the user to check the conversation first.
+Newer turns disable older cards. History loaded from the server, including after
+reload or reconnect, renders interactive cards as read-only; users can still
+answer through the message input. Card answers are not stored separately from
+ordinary session messages.
+
+Charts use local SVG and work without an external chart service. Radar axes use
+the supplied 0–1 values and show their original values in tooltips and a table.
+Sankey charts preserve link weights without inventing units. Cycles, self-links,
+zero-only graphs, and graphs above 60 nodes or 11 columns show the complete link
+table. Progress cards show the state recorded in the message, without polling
+or a fabricated percentage. Charts and state cards remain visible in history.
+
+Each component is limited to 64 KiB of JSON text. A message renders up to 30
+components; selections allow 50 options, confirmations 20 actions, forms 20
+questions, radar charts 3–12 axes, and Sankey data 200 links. Invalid or unknown
+components remain readable as code and do not prevent later blocks from rendering.
+
 ### Live Session Management
 
 - Backend-owned live Pi RPC sessions, each backed by a `pi --mode rpc` subprocess

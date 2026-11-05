@@ -3,6 +3,8 @@
  */
 
 import { renderMarkdown, renderUserMarkdown } from './markdown.js';
+import { assistantText } from './nexus-data.js';
+import { renderNexusMessage, deactivateNexus, type NexusContext } from './nexus-view.js';
 import { imageSource } from './image-source.js';
 
 type RenderedImage = {
@@ -31,6 +33,7 @@ type RenderMessage = {
 export class MessageRenderer {
   container: HTMLElement;
   isNearBottom: boolean;
+  nexusContext?: (message: HTMLElement) => NexusContext | undefined;
   /** Text of history thinking blocks that have not been opened yet. */
   private unopenedThinking = new WeakMap<Element, string>();
 
@@ -86,6 +89,7 @@ export class MessageRenderer {
 
   renderUserMessage(message: RenderMessage, isHistory = false, target: ParentNode = this.container) {
     this.removeWelcome();
+    if (!isHistory) deactivateNexus(this.container);
 
     const div = document.createElement('div');
     div.className = `message user${isHistory ? ' history' : ''}`;
@@ -112,6 +116,7 @@ export class MessageRenderer {
 
   renderAssistantMessage(message: RenderMessage, isStreaming = false, isHistory = false, target: ParentNode = this.container) {
     this.removeWelcome();
+    if (!isHistory) deactivateNexus(this.container);
 
     const div = document.createElement('div');
     div.className = `message assistant${isHistory ? ' history' : ''}`;
@@ -152,6 +157,16 @@ export class MessageRenderer {
       ${usageHtml}
       ${!isStreaming ? '<button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>' : ''}
     `;
+
+    if (!isStreaming) {
+      const text = assistantText(message.content);
+      if (text.includes('[nexus-ui]')) {
+        const content = div.querySelector<HTMLElement>('.message-content')!;
+        content.innerHTML = thinkingTexts.map(t => this.renderThinkingBlock(t, isHistory)).join('');
+        renderNexusMessage(text, content, isHistory ? undefined : this.nexusContext?.(div));
+        if (message.error) content.insertAdjacentHTML('beforeend', this.messageErrorHtml(message.error));
+      }
+    }
 
     if (isHistory && thinkingTexts.length > 0) {
       div.querySelectorAll(':scope > .message-content > .thinking-block > .thinking-content')
@@ -255,6 +270,10 @@ export class MessageRenderer {
       }
       html += renderMarkdown(text);
       contentDiv.innerHTML = html;
+      if (text.includes('[nexus-ui]')) {
+        contentDiv.innerHTML = thinking ? this.renderThinkingBlock(thinking) : '';
+        renderNexusMessage(text, contentDiv as HTMLElement, this.nexusContext?.(messageElement));
+      }
     }
 
     // Add copy button after streaming finishes
