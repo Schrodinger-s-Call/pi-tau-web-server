@@ -11,6 +11,7 @@ import { modelMeta, modelRef, normalizeModelList, searchModels } from './model-m
 import { DialogHandler, type DialogRequest } from './dialogs.js';
 import { SessionSidebar, type SidebarProject, type SidebarSession } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
+import { FilePreview } from './file-preview.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { setupLauncherPanel } from './launcher-panel.js';
 import { setupModelPicker } from './model-picker.js';
@@ -258,6 +259,14 @@ const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput, (fi
   pendingFilePaths.push({ path: filePath, name, ext, sessionId: activeLiveSessionId });
   renderAttachmentPreviews();
 }, () => (viewingActiveSession && liveSessions.some(s => s.id === activeLiveSessionId) ? activeLiveSessionId : null));
+
+const filePreview = new FilePreview(() => renderLiveTabs(), path => fileBrowser.insertPath(path));
+fileBrowser.onPreview = path => {
+  launcherPanel.hide();
+  if (viewingActiveSession && activeLiveSessionId) void filePreview.open(path, activeLiveSessionId);
+};
+
+document.getElementById('mode-toggle')?.addEventListener('click', () => filePreview.hide());
 
 fileSidebarToggle.addEventListener('click', () => {
   const isCollapsed = fileSidebar.classList.toggle('collapsed');
@@ -553,6 +562,7 @@ function setLiveSessions(sessions: LiveSession[]) {
 
 function handleLiveSessionClosed(closedId: string) {
   if (!closedId) return;
+  if (activeLiveSessionId === closedId) filePreview.hide(false);
   liveSessions = liveSessions.filter(s => s.id !== closedId);
   messageQueue = messageQueue.filter(cmd => cmd.sessionId !== closedId);
   pendingExtensionUIRequests = pendingExtensionUIRequests.filter(req => req.sessionId !== closedId);
@@ -667,7 +677,7 @@ function renderLiveTabs() {
       tab.addEventListener('click', () => selectLiveSession(session.id));
     }
     seen.add(session.id);
-    tab.classList.toggle('active', session.id === activeLiveSessionId);
+    tab.classList.toggle('active', session.id === activeLiveSessionId && !filePreview.active);
     tab.title = `${session.cwd || ''}${session.modelSpec ? ` • ${session.modelSpec}` : ''}`;
     const signature = liveTabSignature(session);
     if (tab.dataset.signature !== signature) {
@@ -690,6 +700,7 @@ function renderLiveTabs() {
   for (const [id, tab] of existing) {
     if (!seen.has(id)) tab.remove();
   }
+  filePreview.sync(viewingActiveSession ? activeLiveSessionId : null, liveSessions.map(session => session.id));
 }
 
 function restoreActiveLiveSession() {
@@ -711,6 +722,9 @@ function restoreActiveLiveSession() {
 }
 
 async function selectLiveSession(id: string) {
+  const returningFromFile = filePreview.active && id === activeLiveSessionId;
+  filePreview.hide(false);
+  if (returningFromFile) { renderLiveTabs(); return; }
   const session = liveSessions.find(s => s.id === id);
   if (!session) return;
   // Selecting the shown tab again reloads it from the server.
@@ -801,7 +815,7 @@ async function loadProjectChips() {
       chip.className = 'project-chip';
       chip.textContent = project.name;
       chip.title = project.path;
-      chip.addEventListener('click', () => { newLiveSessionCwd.value = project.path; });
+      chip.addEventListener('click', () => { directoryInputRevision++; newLiveSessionCwd.value = project.path; });
       newLiveSessionProjects.appendChild(chip);
     }
   } catch {}
@@ -843,18 +857,37 @@ const modelCompletion = attachCompletionList({
   },
 });
 
+let directoryInputRevision = 0;
+newLiveSessionCwd.addEventListener('input', () => { directoryInputRevision++; });
+
+async function fillDefaultDirectory(revision: number) {
+  let cwd = liveSessions.find(s => s.id === activeLiveSessionId)?.cwd || '';
+  try {
+    const response = await fetch('/api/session-defaults');
+    if (response.ok) {
+      const defaults = await response.json();
+      if (typeof defaults.cwd === 'string' && defaults.cwd) cwd = defaults.cwd;
+    }
+  } catch {}
+  if (revision === directoryInputRevision && !newLiveSessionCwd.value && !newLiveSessionModal?.classList.contains('hidden')) {
+    newLiveSessionCwd.value = cwd;
+  }
+}
+
 function openNewLiveSessionModal(cwd?: string) {
+  const revision = ++directoryInputRevision;
   newLiveSessionOverlay?.classList.remove('hidden');
   newLiveSessionModal?.classList.remove('hidden');
   newLiveSessionSubmit.disabled = false;
   if (cwd) newLiveSessionCwd.value = cwd;
-  else if (!newLiveSessionCwd.value) newLiveSessionCwd.value = liveSessions.find(s => s.id === activeLiveSessionId)?.cwd || '';
+  else if (!newLiveSessionCwd.value) void fillDefaultDirectory(revision);
   loadProjectChips();
   loadNewLiveSessionModels();
   requestAnimationFrame(() => newLiveSessionCwd?.focus());
 }
 
 function closeNewLiveSessionModal() {
+  directoryInputRevision++;
   cwdCompletion.close();
   modelCompletion.close();
   newLiveSessionOverlay?.classList.add('hidden');
@@ -1608,6 +1641,20 @@ function renderAttachmentPreviews() {
       el.appendChild(label);
     }
 
+    if (!IMAGE_EXTS.has(fp.ext)) {
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      el.setAttribute('aria-label', `Preview ${fp.name}`);
+      const preview = () => {
+        if (fp.sessionId && fp.sessionId === activeLiveSessionId) void filePreview.open(fp.path, fp.sessionId);
+      };
+      el.addEventListener('click', event => {
+        if (!(event.target instanceof Element && event.target.closest('.image-preview-remove'))) preview();
+      });
+      el.addEventListener('keydown', event => {
+        if (event.target === el && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); preview(); }
+      });
+    }
     el.appendChild(removeBtn);
     imagePreviews.appendChild(el);
   });
@@ -2050,6 +2097,7 @@ document.addEventListener('keydown', (e) => {
       return;
     }
     if (commandPaletteController.closeIfOpen()) return;
+    if (filePreview.active) { filePreview.hide(); return; }
 
     if (viewingActiveSession && activeLiveSessionId && (state.isStreaming || sessionHasPendingWork(activeLiveSessionId))) {
       abortActiveSession();
@@ -2059,7 +2107,7 @@ document.addEventListener('keydown', (e) => {
   }
 
   // / — Focus message input (when not already in an input)
-  if (e.key === '/' && !isInInput()) {
+  if (e.key === '/' && !isInInput() && !filePreview.active) {
     e.preventDefault();
     messageInput.focus();
   }
@@ -2195,6 +2243,7 @@ async function handleSessionSelect(session: SidebarSession | null, project: Side
 }
 
 async function switchSession(sessionFile: string | null | undefined, session: SidebarSession | null = null, project: SidebarProject | null = null) {
+  filePreview.hide();
   try {
     parkActiveView();
     // Clear any streaming state from previous session to prevent bleed

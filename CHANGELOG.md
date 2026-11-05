@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Set `TAU_DEFAULT_CWD` or `tau.defaultCwd` to prefill the directory when creating a new session.
+
+- Read text files in tabs beside the conversation, with Markdown preview and source views, copying, refresh, and an action to add the file to a message. File size and formatting limits keep large documents from blocking the page.
+
 ## [1.2.1] - 2026-11-03
 
 ### Changed

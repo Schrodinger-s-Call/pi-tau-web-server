@@ -230,6 +230,9 @@ run_instance() {
     --volume "$state_dir:/state:rw"
     --volume "$projects_dir:/state/home/projects:rw"
   )
+  if [[ -n "${TAU_DEFAULT_CWD:-}" ]]; then
+    run_args+=(--env TAU_DEFAULT_CWD)
+  fi
   if runtime_is_podman "$runtime"; then
     run_args+=(--userns keep-id)
   fi

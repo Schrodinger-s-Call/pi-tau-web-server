@@ -8,6 +8,7 @@
  */
 
 import http from 'node:http';
+import { readTextFile } from './text-file.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -547,6 +548,10 @@ function handleApiRoute(req: IncomingMessage, res: ServerResponse, urlPath: stri
     const items = completeDirectories(parsed.searchParams.get('prefix') || '', TAU_SETTINGS.projectsDir || USER_HOME);
     return json(res, 200, { items });
   }
+  if (cleanPath === '/api/session-defaults' && req.method === 'GET') {
+    res.setHeader('Cache-Control', 'no-store');
+    return json(res, 200, { cwd: TAU_SETTINGS.defaultCwd });
+  }
   if (cleanPath === '/api/projects' && req.method === 'GET') return serveProjectsList(res);
   if (cleanPath === '/api/sessions' && req.method === 'GET') return serveSessionsList(res);
   if (cleanPath.startsWith('/api/search') && req.method === 'GET') return serveSearch(res, parsed.searchParams.get('q') || '');
@@ -560,6 +565,20 @@ function handleApiRoute(req: IncomingMessage, res: ServerResponse, urlPath: stri
       const dirPath = resolveLiveSessionPath(session, explicitPath || session.cwd);
       return serveFileList(res, dirPath);
     } catch (e) { return json(res, errorStatus(e), { error: errorMessage(e) }); }
+  }
+  if (cleanPath === '/api/file/text' && req.method === 'GET') {
+    const sessionId = parsed.searchParams.get('sessionId');
+    const requestedPath = parsed.searchParams.get('path');
+    if (!sessionId || !requestedPath) return json(res, 400, { error: 'sessionId and path are required' });
+    try {
+      const filePath = resolveLiveSessionPath(liveManager.get(sessionId), requestedPath);
+      res.setHeader('Cache-Control', 'no-store');
+      void readTextFile(filePath).then(text => json(res, 200, { text })).catch(e => {
+        const status = e.code === 'ENOENT' ? 404 : e.code === 'EACCES' ? 403 : errorStatus(e);
+        json(res, status, { error: errorMessage(e) });
+      });
+    } catch (e) { return json(res, errorStatus(e), { error: errorMessage(e) }); }
+    return;
   }
   if (cleanPath === '/api/file/preview' && req.method === 'GET') {
     const sessionId = parsed.searchParams.get('sessionId');

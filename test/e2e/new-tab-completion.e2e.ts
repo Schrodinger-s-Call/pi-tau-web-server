@@ -15,6 +15,7 @@ process.env.TAU_HOST = '127.0.0.1';
 process.env.PI_CODING_AGENT_DIR = tmp;
 process.env.PI_CODING_AGENT_SESSION_DIR = path.join(tmp, 'sessions');
 process.env.TAU_PROJECTS_DIR = projects;
+process.env.TAU_DEFAULT_CWD = projects;
 const { server, computeUrls, liveManager, _setExecFileForTest } = (await import('../../bin/tau.js')) as any;
 
 const MODEL_LIST = [
@@ -186,4 +187,39 @@ test('no model suggestions appear once a thinking level is being typed', async (
   await page.locator('#new-live-session-model').pressSequentially('openai/gpt-5.5:hi');
   await page.waitForTimeout(150);
   assert.equal(await rows(page, 'new-live-session-model').count(), 0);
+});
+
+
+test('new tabs use the configured directory and keep a manually entered directory', async t => {
+  const page = await openPopup(t);
+  if (!page) return;
+  await page.waitForFunction(expected => (document.getElementById('new-live-session-cwd') as HTMLInputElement).value === expected, projects);
+  await page.fill('#new-live-session-cwd', '/manual');
+  await page.click('#new-live-session-cancel');
+  await page.click('#live-tab-add');
+  assert.equal(await page.inputValue('#new-live-session-cwd'), '/manual');
+});
+
+test('a delayed default cannot replace text entered while the form loads', async t => {
+  const page = await openPopup(t);
+  if (!page) return;
+  await page.fill('#new-live-session-cwd', '');
+  await page.click('#new-live-session-cancel');
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let started!: () => void;
+  const requested = new Promise<void>(resolve => { started = resolve; });
+  await page.route('**/api/session-defaults', async route => {
+    started();
+    await gate;
+    await route.fulfill({ json: { cwd: projects } });
+  });
+  await page.click('#live-tab-add');
+  await requested;
+  await page.fill('#new-live-session-cwd', '/manual');
+  const response = page.waitForResponse('**/api/session-defaults');
+  release();
+  await response;
+  await page.click('#new-live-session-model');
+  assert.equal(await page.inputValue('#new-live-session-cwd'), '/manual');
 });

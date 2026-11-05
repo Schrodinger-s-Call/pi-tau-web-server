@@ -4204,3 +4204,66 @@ body.hide-thinking .thinking-block { display: none !important; }
   .live-tabs { margin-top: 58px; padding: 0 8px; min-height: 34px; }
   .live-tab { min-width: 100px; max-width: 170px; padding: 6px 7px; }
 }
+
+/* File tabs keep the conversation mounted while the document is visible. */
+body.viewing-file #messages,
+body.viewing-file .input-area,
+body.viewing-file #scroll-bottom-btn,
+body.viewing-file #launcher {
+  display: none !important;
+}
+.file-preview {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.file-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.file-preview-path {
+  flex: 1 1 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-preview-toolbar button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.file-preview-status {
+  padding: 8px 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.file-preview-content.message.assistant {
+  display: block;
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+  overflow: auto;
+  padding: 16px 24px;
+  margin: 0;
+}
+.file-preview-source {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.file-preview-content .message-content { max-width: none; }
+.file-tab .live-tab-title::before { content: '▤ '; }
+.file-item:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: -2px; }

@@ -52,6 +52,8 @@ export class FileBrowser {
   onFileInserted: ((filePath: string) => void) | null;
   getSessionId: (() => string | null) | null;
   currentPath: string | null;
+  onPreview: ((path: string) => void) | null = null;
+  private loadRevision = 0;
 
   constructor(
     container: HTMLElement,
@@ -71,6 +73,7 @@ export class FileBrowser {
   }
 
   async load(dirPath?: string | null) {
+    const revision = ++this.loadRevision;
     this.container.innerHTML = '<div class="file-loading">Loading…</div>';
 
     try {
@@ -89,9 +92,10 @@ export class FileBrowser {
       const url = qs ? `/api/files?${qs}` : '/api/files';
       const res = await fetch(url);
       const data = await res.json();
+      if (revision !== this.loadRevision || sessionId !== this.getSessionId?.()) return;
 
       if (data.error) {
-        this.container.innerHTML = `<div class="file-loading">${data.error}</div>`;
+        this.container.textContent = data.error;
         return;
       }
 
@@ -100,6 +104,7 @@ export class FileBrowser {
       this.pathEl.title = data.path;
       this.render(data.items);
     } catch (err) {
+      if (revision !== this.loadRevision) return;
       this.container.innerHTML = '<div class="file-loading">Failed to load</div>';
     }
   }
@@ -133,26 +138,39 @@ export class FileBrowser {
       const icon = getFileIcon(item.name, item.isDirectory);
       const size = item.isDirectory ? '' : formatSize(item.size);
 
-      el.innerHTML = `
-        <span class="file-icon">${icon}</span>
-        <span class="file-name" title="${item.name}">${item.name}</span>
-        ${size ? `<span class="file-size">${size}</span>` : ''}
-      `;
-
-      // Click: navigate directory or insert file path into input
-      el.addEventListener('click', () => {
+      const iconEl = document.createElement('span');
+      iconEl.className = 'file-icon';
+      iconEl.textContent = icon;
+      const nameEl = document.createElement('span');
+      nameEl.className = 'file-name';
+      nameEl.title = item.name;
+      nameEl.textContent = item.name;
+      const sizeEl = document.createElement('span');
+      sizeEl.className = 'file-size';
+      sizeEl.textContent = size;
+      el.append(iconEl, nameEl, sizeEl);
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      const activate = () => {
         if (item.isDirectory) {
-          this.load(item.path);
+          void this.load(item.path);
+        } else if (this.onPreview && !/\.(png|jpe?g|gif|webp|ico|svg)$/i.test(item.path)) {
+          this.onPreview(item.path);
         } else {
           this.insertPath(item.path);
         }
+      };
+      el.addEventListener('click', activate);
+      el.addEventListener('dblclick', event => {
+        if (!item.isDirectory && /\.(png|jpe?g|gif|webp|ico|svg)$/i.test(item.path)) {
+          event.preventDefault();
+          void this.openNatively(item.path);
+        }
       });
-
-      // Double-click: open file natively
-      el.addEventListener('dblclick', (e) => {
-        e.preventDefault();
-        if (!item.isDirectory) {
-          this.openNatively(item.path);
+      el.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          activate();
         }
       });
 

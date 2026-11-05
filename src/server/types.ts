@@ -14,6 +14,7 @@ export type TauSettingsFile = {
     authEnabled?: boolean;
     cookieSecret?: string;
     projectsDir?: string;
+    defaultCwd?: string;
     [key: string]: unknown;
   };
 };
@@ -25,6 +26,7 @@ export type TauSettings = {
   authEnabled?: boolean;
   cookieSecret?: string;
   projectsDir: string;
+  defaultCwd: string;
 };
 export type ModelIdentity = {
   provider?: string;

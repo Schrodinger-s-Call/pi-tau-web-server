@@ -157,8 +157,13 @@ machine. Pass `--bind 127.0.0.1` to restrict an instance to local access.
 ### File Browser
 
 - Right sidebar rooted at the active live session's working directory
-- Navigate directories, open files natively
-- Drag files onto the input to insert their path
+- Click text files to read them in tabs beside the conversation. File tabs belong to the selected session and stay available when you return to it.
+- Markdown opens with formatting and a source toggle. Other UTF-8 text files preserve their contents and spacing. Previews are read-only and include Copy, Refresh, and Add to message actions.
+- Click a text file card above the input to open its preview. Drag files onto the input to insert their path.
+- Text previews accept regular UTF-8 files up to 256 KiB. Larger files and binary files show an explanation without loading their contents into the page.
+- Markdown formatting runs in a background worker with a one-second time limit. Documents above 32 KiB, 1,500 lines, or 2,000 characters per line show source. Images and relative links appear as text; external links remain clickable.
+- File tabs reload their contents when selected. Up to 12 file tabs are retained in the browser; reloading the page closes them.
+- Images can be added to the input with a click or opened with a double-click in an application on the server.
 
 ### Session Browser
 
@@ -196,6 +201,7 @@ Six built-in themes: Dusk (clean neutral dark, default), Dawn (warm blue dark), 
 | ------------------ | ----------: | -------------------------------------------------------: |
 | `TAU_PORT`         |      `3001` |                                              Server port |
 | `TAU_HOST`         |   `0.0.0.0` |                                             Bind address |
+| `TAU_DEFAULT_CWD` | _(none)_ | Default directory filled into the new-tab form |
 | `TAU_PROJECTS_DIR` |    _(none)_ | Directory scanned for project chips in the new-tab modal |
 | `TAU_PI_COMMAND`   |        `pi` |                              Pi executable that Tau runs |
 | `TAU_STATIC_DIR`   | _(bundled)_ |                               Override static files path |
@@ -203,6 +209,14 @@ Six built-in themes: Dusk (clean neutral dark, default), Dawn (warm blue dark), 
 | `TAU_PASS`         |    _(none)_ |                                 HTTP Basic Auth password |
 | `TAU_COOKIE_SECRET`| _(generated)_ |            Secret that signs session cookies (optional) |
 | `TAU_INTERACTION_DIAGNOSTICS` | _(off)_ | Set to `1` to log dialog/Abort lifecycle IDs, reasons, and timestamps to stderr |
+
+Set `TAU_DEFAULT_CWD=/workspace` in the container environment to prefill the
+new-tab directory. The path must exist inside the container. The container
+launcher forwards this variable when set. You can also set
+`tau.defaultCwd` in the instance's Pi `settings.json`; the environment variable
+takes priority. Restart Tau after changing this configuration.
+An explicitly selected or already entered directory is kept. Otherwise, the
+configured default is used, followed by the active session's directory.
 
 Tau also reads matching values from `~/.pi/agent/settings.json` under the `tau` key (`host`, `port`, `projectsDir`, `user`, `pass`, `authEnabled`, `cookieSecret`).
 

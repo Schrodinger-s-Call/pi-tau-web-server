@@ -824,3 +824,38 @@ test('GET /api/complete/directories expands ~ to the home directory', async () =
   const home = process.env.HOME || os.homedir();
   for (const item of body.items) assert.equal(path.dirname(item.path), path.resolve(home));
 });
+
+test('text previews enforce size, encoding, and session directory boundaries', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tau-text-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tau-text-outside-'));
+  t.after(() => { fs.rmSync(cwd, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); });
+  const session = fakeSession('tau_text');
+  session.cwd = cwd;
+  liveManager.sessions.set(session.id, session);
+  const request = (file: string, id = session.id) => fetch(`${base}/api/file/text?${new URLSearchParams({ sessionId: id, path: file })}`);
+  const text = '# 文件\n\nHello <script>alert(1)</script>\n';
+  fs.writeFileSync(path.join(cwd, 'notes.md'), text);
+  const response = await request(path.join(cwd, 'notes.md'));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal((await response.json()).text, text);
+  fs.writeFileSync(path.join(cwd, 'empty.txt'), '');
+  assert.equal((await (await request(path.join(cwd, 'empty.txt'))).json()).text, '');
+  fs.writeFileSync(path.join(cwd, 'limit.txt'), 'x'.repeat(256 * 1024));
+  assert.equal((await request(path.join(cwd, 'limit.txt'))).status, 200);
+  fs.appendFileSync(path.join(cwd, 'limit.txt'), 'x');
+  assert.equal((await request(path.join(cwd, 'limit.txt'))).status, 413);
+  fs.writeFileSync(path.join(cwd, 'binary.txt'), Buffer.from([0, 1, 2]));
+  assert.equal((await request(path.join(cwd, 'binary.txt'))).status, 415);
+  fs.writeFileSync(path.join(cwd, 'encoding.txt'), Buffer.from([0xff, 0xfe]));
+  assert.equal((await request(path.join(cwd, 'encoding.txt'))).status, 415);
+  assert.equal((await request(cwd)).status, 415);
+  assert.equal((await request(path.join(cwd, 'missing.txt'))).status, 404);
+  assert.equal((await request(path.join(cwd, 'notes.md'), 'absent')).status, 404);
+  assert.equal((await fetch(`${base}/api/file/text`)).status, 400);
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+  assert.equal((await request(path.join(outside, 'secret.txt'))).status, 403);
+  fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(cwd, 'link.txt'));
+  assert.equal((await request(path.join(cwd, 'link.txt'))).status, 403);
+  assert.equal((await fetch(`${base}/api/health`)).status, 200);
+});
