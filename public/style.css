@@ -4308,4 +4308,6 @@ body.viewing-file #launcher {
 
 .workspace-select { margin: 8px; padding: 8px; max-width: calc(100% - 16px); color: var(--text-primary); background: var(--bg-solid); border: 1px solid var(--border); border-radius: 6px; }
 .workspace-version { padding: 6px 12px; font-size: 12px; overflow-wrap: anywhere; }
+.session-identity { margin-top: 4px; user-select: text; }
+.session-identity button { margin-left: 8px; font-size: inherit; }
 .runtime-file-label { color: var(--text-secondary); font-size: 11px; font-weight: normal; }

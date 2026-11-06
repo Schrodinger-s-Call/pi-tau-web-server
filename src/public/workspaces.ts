@@ -56,6 +56,50 @@ function render() {
     versionLabel.textContent = currentLive?.workspace_id
       ? `${currentLive.workspace_name || currentLive.workspace_id} · Running: ${currentLive.run?.actual_bundle.name || 'Unknown'} (${currentLive.run?.actual_bundle.sha256.slice(0, 12) || '?'}) · Current: ${w?.current_bundle.name || 'Unavailable'} (${w?.current_bundle.sha256.slice(0, 12) || '?'})${currentLive.identity_sync_pending ? ' · Run record update pending' : ''}${currentLive.history_sync_pending ? ' · Loading current history' : ''}${error ? ` · ${error}` : ''}`
       : selectedWorkspace ? `${workspaces.find(w => w.workspace_id === selectedWorkspace)?.display_name || selectedWorkspace} · Select or create a conversation` : 'Select a workspace to create a conversation';
+    if (currentLive?.pi_session_id) {
+      const identity = document.createElement('div');
+      identity.className = 'session-identity';
+      const label = document.createElement('span');
+      label.textContent = 'Pi session ID: ';
+      const value = document.createElement('code');
+      value.textContent = currentLive.pi_session_id;
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = 'Copy ID';
+      copy.setAttribute('aria-label', 'Copy Pi session ID');
+      const sessionId = currentLive.pi_session_id;
+      copy.addEventListener('click', async () => {
+        try {
+          await copySessionId(sessionId);
+          copy.textContent = 'Copied';
+        } catch {
+          copy.textContent = 'Copy failed';
+        }
+      });
+      identity.append(label, value, copy);
+      if (currentLive.sessionFile) {
+        const file = document.createElement('div');
+        file.textContent = `Session file: ${currentLive.sessionFile}`;
+        identity.append(file);
+      }
+      versionLabel.append(identity);
+    }
+  }
+}
+
+async function copySessionId(id: string) {
+  if (navigator.clipboard) return navigator.clipboard.writeText(id);
+  const previousFocus = document.activeElement;
+  const input = document.createElement('textarea');
+  input.value = id;
+  input.style.cssText = 'position:fixed;left:-9999px';
+  document.body.append(input);
+  try {
+    input.select();
+    if (!document.execCommand('copy')) throw new Error('Could not copy session ID');
+  } finally {
+    input.remove();
+    if (previousFocus instanceof HTMLElement) previousFocus.focus();
   }
 }
 export function showWorkspaceVersion(session?: LiveSession) { currentLive = session; render(); }

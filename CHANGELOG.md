@@ -4,6 +4,8 @@
 
 ### Added
 
+- View and copy the Pi session ID above a workspace conversation, and see the local path to its session record.
+
 - Select isolated workspaces through the run_tau bridge, keep each conversation and its files in its own workspace, and see both the current bundle and the version used by a running conversation.
 
 - Assistant replies can display Nexus UI selections, confirmations, forms, task states, radar charts, and Sankey charts. Answers return to the original conversation, and history cards remain read-only.
