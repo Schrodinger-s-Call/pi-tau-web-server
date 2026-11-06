@@ -1,3 +1,4 @@
+import { workspaceEnabled, downloadWorkspaceFile } from './workspaces.js';
 async function copyText(text: string) {
   if (navigator.clipboard) return navigator.clipboard.writeText(text);
   const previousFocus = document.activeElement;
@@ -120,6 +121,7 @@ export class FilePreview {
       return element;
     };
     button('Add to message', () => { this.hide(); this.insert(path); });
+    if (workspaceEnabled) button('Download', () => downloadWorkspaceFile(sessionId, path));
     button('Refresh', () => { void this.open(path, sessionId); });
     button('Back to chat', () => this.hide());
     const status = document.createElement('p');

@@ -129,6 +129,7 @@ async function loadExtensionHandler() {
   const registered: Record<string, { description?: string; handler: Handler }> = {};
   const appended: Json[] = [];
   const pi = {
+    on() { return () => {}; },
     registerCommand(name: string, options: Json) { registered[name] = options as { handler: Handler }; },
     appendEntry(customType: string, data?: Json) { appended.push({ customType, data }); },
   };

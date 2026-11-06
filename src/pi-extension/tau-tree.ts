@@ -42,6 +42,12 @@ export const NAVIGATE_COMMAND = 'tau-tree-navigate';
 export const NAVIGATION_MARKER_TYPE = 'tau:navigate-tree';
 
 export default function tauTreeExtension(pi: ExtensionAPI) {
+  pi.on('session_start', async (_event, ctx) => {
+    ctx.ui.setStatus('tau_session_identity', JSON.stringify({
+      sessionId: ctx.sessionManager.getSessionId(),
+      sessionFile: ctx.sessionManager.getSessionFile() ?? null,
+    }));
+  });
   pi.registerCommand(NAVIGATE_COMMAND, {
     description: 'Move the session leaf to an entry (used by the tau web UI tree view)',
     handler: async (args, ctx) => {

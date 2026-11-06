@@ -1,3 +1,5 @@
+import { type Workspace } from './workspaces.js';
+import { workspaceCommand } from './workspace-command.js';
 import { execFile } from 'node:child_process';
 
 import { PI_COMMAND } from './config.js';
@@ -104,7 +106,11 @@ export function execFileAsync(file: string, args: string[], opts: JsonRecord): P
   });
 }
 
-export async function getAvailableModels() {
+export async function getAvailableModels(workspace?: Workspace) {
+  if (workspace) {
+    const { stdout } = await workspaceCommand(workspace, 'models', ['--list-models']);
+    return parsePiListModels(stdout);
+  }
   const now = Date.now();
   if (modelListCache.at && now - modelListCache.at < MODEL_LIST_CACHE_MS) {
     return modelListCache.models;

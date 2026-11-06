@@ -8,6 +8,7 @@ export const SESSION_LIMIT = 10;
 
 /** A live tab, as far as the sidebar needs to know about it. */
 export type OpenTab = {
+  workspace_id?: string;
   id: string;
   /** The tab's session file. Null until Pi reports it. */
   filePath: string | null;

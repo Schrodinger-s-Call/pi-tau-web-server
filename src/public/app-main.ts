@@ -1,3 +1,4 @@
+import { workspaceForPath, selectedWorkspace, workspaceEnabled, selectWorkspace, setupWorkspaces, showWorkspaceVersion, downloadWorkspaceFile } from './workspaces.js';
 /**
  * Main App - Ties everything together
  */
@@ -169,7 +170,7 @@ const launcherPanel = setupLauncherPanel({
       const res = await fetch('/api/live-sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: projectPath, model: '' }),
+        body: JSON.stringify({ cwd: projectPath, workspace_id: await workspaceForPath(projectPath), model: '' }),
       });
       const data = await res.json();
       if (data.session) {
@@ -261,6 +262,10 @@ const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput, (fi
   renderAttachmentPreviews();
 }, () => (viewingActiveSession && liveSessions.some(s => s.id === activeLiveSessionId) ? activeLiveSessionId : null));
 
+messageRenderer.fileContext = () => {
+  const live = liveSessions.find(s => s.id === activeLiveSessionId);
+  return live?.workspace_id ? live.workspace_id : undefined;
+};
 const filePreview = new FilePreview(() => renderLiveTabs(), path => fileBrowser.insertPath(path));
 fileBrowser.onPreview = path => {
   launcherPanel.hide();
@@ -334,6 +339,7 @@ fetch('/api/health').then(r => r.json()).then(data => {
 }).catch(() => {});
 
 document.getElementById('file-sidebar-finder')!.addEventListener('click', () => {
+  if (workspaceEnabled) return;
   const sessionId = viewingActiveSession && activeLiveSessionId ? activeLiveSessionId : null;
   if (fileBrowser.currentPath && sessionId) {
     fetch('/api/open', {
@@ -690,6 +696,10 @@ function liveTabSignature(session: LiveSession) {
     session.sessionName || basename(session.cwd || ''),
     compactModelLabel(session),
     session.cwd || '',
+    session.workspace_id || '',
+    session.run?.run_id || '',
+    String(session.identity_sync_pending || false),
+    String(session.history_sync_pending || false),
     session.modelSpec || '',
     sessionIsBusy(session) ? 'streaming' : 'idle',
     pendingInteractionCount(session.id),
@@ -702,6 +712,7 @@ function sessionIsBusy(session: LiveSession) {
 }
 
 function renderLiveTabs() {
+  showWorkspaceVersion(liveSessions.find(s => s.id === activeLiveSessionId));
   if (!liveTabsList) return;
   const existing = new Map<string, HTMLButtonElement>();
   liveTabsList.querySelectorAll<HTMLButtonElement>('.live-tab').forEach((tab) => {
@@ -719,14 +730,14 @@ function renderLiveTabs() {
     }
     seen.add(session.id);
     tab.classList.toggle('active', session.id === activeLiveSessionId && !filePreview.active);
-    tab.title = `${session.cwd || ''}${session.modelSpec ? ` • ${session.modelSpec}` : ''}`;
+    tab.title = `${session.workspace_name || ''} ${session.cwd || ''}${session.modelSpec ? ` • ${session.modelSpec}` : ''}`;
     const signature = liveTabSignature(session);
     if (tab.dataset.signature !== signature) {
       tab.dataset.signature = signature;
       tab.innerHTML = `
         ${sessionIsBusy(session) ? '<span class="live-tab-streaming-dot"></span>' : ''}
         ${pendingInteractionCount(session.id) ? `<span class="live-tab-ui-dot" title="Waiting for approval" aria-label="${pendingInteractionCount(session.id)} pending approvals">${pendingInteractionCount(session.id)}</span>` : ''}
-        <span class="live-tab-title">${escapeHtml(session.sessionName || basename(session.cwd || ''))}</span>
+        <span class="live-tab-title">${escapeHtml(`${session.workspace_name ? session.workspace_name + ': ' : ''}${session.sessionName || basename(session.cwd || '')}`)}</span>
         <span class="live-tab-model">${escapeHtml(compactModelLabel(session))}</span>
         <span class="live-tab-close" title="Close Tau tab">×</span>
       `;
@@ -856,7 +867,7 @@ async function loadProjectChips() {
       chip.className = 'project-chip';
       chip.textContent = project.name;
       chip.title = project.path;
-      chip.addEventListener('click', () => { directoryInputRevision++; newLiveSessionCwd.value = project.path; });
+      chip.addEventListener('click', () => { directoryInputRevision++; newLiveSessionCwd.value = project.path; if (project.workspace_id) selectWorkspace(project.workspace_id); });
       newLiveSessionProjects.appendChild(chip);
     }
   } catch {}
@@ -864,12 +875,15 @@ async function loadProjectChips() {
 
 // Model suggestions use the same list and matching as the status-bar model picker.
 let newLiveSessionModels: Array<ModelRecord | string> = [];
+let newModelRequest = 0;
 
 async function loadNewLiveSessionModels() {
+  const revision = ++newModelRequest;
+  newLiveSessionModels = [];
   try {
-    const res = await fetch('/api/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'get_available_models', sessionId: null }) });
+    const res = await fetch('/api/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'get_available_models', workspace_id: await workspaceForPath(), sessionId: null }) });
     const data = await res.json();
-    if (data.success && data.data?.models) newLiveSessionModels = data.data.models;
+    if (revision === newModelRequest && data.success && data.data?.models) newLiveSessionModels = data.data.models;
   } catch {}
 }
 
@@ -920,7 +934,10 @@ function openNewLiveSessionModal(cwd?: string) {
   newLiveSessionOverlay?.classList.remove('hidden');
   newLiveSessionModal?.classList.remove('hidden');
   newLiveSessionSubmit.disabled = false;
-  if (cwd) newLiveSessionCwd.value = cwd;
+  if (cwd) {
+    newLiveSessionCwd.value = cwd;
+    if (workspaceEnabled) void workspaceForPath(cwd).then(id => { if (id) selectWorkspace(id); void loadNewLiveSessionModels(); });
+  }
   else if (!newLiveSessionCwd.value) void fillDefaultDirectory(revision);
   loadProjectChips();
   loadNewLiveSessionModels();
@@ -942,14 +959,14 @@ newLiveSessionOverlay?.addEventListener('click', closeNewLiveSessionModal);
 newLiveSessionForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
   const cwd = newLiveSessionCwd.value.trim();
-  if (!cwd) return;
+  if (!cwd && !workspaceEnabled) return;
   newLiveSessionSubmit.disabled = true;
   newLiveSessionSubmit.textContent = 'Starting…';
   try {
     const res = await fetch('/api/live-sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cwd, model: newLiveSessionModel.value.trim() }),
+      body: JSON.stringify({ cwd, workspace_id: await workspaceForPath(workspaceEnabled ? undefined : cwd), model: newLiveSessionModel.value.trim() }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'Failed to create Tau tab');
@@ -2319,7 +2336,7 @@ async function switchSession(sessionFile: string | null | undefined, session: Si
       // No live tab yet — ask the server to resume this session.
       messageRenderer.renderSystemMessage('Resuming session…');
       try {
-        const resumeBody: Record<string, unknown> = { filePath: sessionFile };
+        const resumeBody: Record<string, unknown> = { filePath: sessionFile, workspace_id: session?.workspace_id || project?.workspace_id };
         if (project?.path) resumeBody.cwd = project.path;
         const res = await fetch('/api/live-sessions/resume', {
           method: 'POST',
@@ -2442,6 +2459,7 @@ function syncSidebarOpenSessions() {
   sidebar.setOpenSessions(liveSessions.map(session => ({
     id: session.id,
     filePath: session.sessionFile || null,
+    workspace_id: session.workspace_id,
     cwd: session.cwd || '',
     name: session.sessionName || null,
     openedAt: Date.parse(session.createdAt || '') || 0,
@@ -3324,3 +3342,37 @@ if (splash) {
 }
 
 console.log('🚀 Tau initialized');
+
+setupWorkspaces(newLiveSessionCwd);
+document.addEventListener('tau-workspace-selected', () => { void sidebar.loadSessions({ quiet: true }); void loadNewLiveSessionModels(); });
+
+const workspaceUpload = document.createElement('input');
+workspaceUpload.type = 'file';
+workspaceUpload.setAttribute('aria-label', 'Upload a file to this conversation');
+workspaceUpload.hidden = true;
+document.getElementById('file-sidebar')!.append(workspaceUpload);
+workspaceUpload.addEventListener('change', async () => {
+  const file = workspaceUpload.files?.[0];
+  const sessionId = activeLiveSessionId;
+  const directory = fileBrowser.currentPath;
+  if (!file || !sessionId) return;
+  try {
+    if (file.size > 10 * 1024 * 1024) throw new Error('Files must be at most 10 MiB');
+    const data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1]);
+      reader.onerror = () => reject(new Error('Could not read this file'));
+      reader.readAsDataURL(file);
+    });
+    const response = await fetch('/api/file/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, path: directory, name: file.name, data }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Upload failed');
+    if (activeLiveSessionId === sessionId) await fileBrowser.load(directory);
+  } catch (error) { messageRenderer.renderError(error instanceof Error ? error.message : 'Upload failed'); }
+  workspaceUpload.value = '';
+});
+void import('./workspaces.js').then(async module => {
+  await module.workspacesReady;
+  workspaceUpload.hidden = !module.workspaceEnabled;
+  if (module.workspaceEnabled) document.getElementById('file-sidebar-finder')!.hidden = true;
+});

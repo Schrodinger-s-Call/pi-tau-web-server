@@ -32,6 +32,12 @@ export type ModelRecord = {
 };
 
 export type LiveSession = {
+  workspace_id?: string;
+  workspace_name?: string;
+  pi_session_id?: string;
+  identity_sync_pending?: boolean;
+  history_sync_pending?: boolean;
+  run?: { run_id: string; actual_bundle: { name: string; sha256: string; commit: string | null } };
   id: string;
   cwd?: string;
   sessionFile?: string | null;

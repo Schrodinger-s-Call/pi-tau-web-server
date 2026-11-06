@@ -29,6 +29,10 @@ import { getAvailableModels, modelLabel, normalizeModel, parseModelSpecToModel, 
 import { LiveSessionManager, PiRpcSession, isGenericSessionName, liveManager, makeId, _setSpawnPiForTest } from './sessions.js';
 import { NAVIGATE_COMMAND, NAVIGATION_MARKER_TYPE, flattenTree, isTreeNavigationInProgress, leafDescendsFrom, navigateTree, pathFromRoot, selectNavigationTarget } from './tree.js';
 
+import { workspaceCommand } from './workspace-command.js';
+import { handleWorkspaceApi } from './workspace-api.js';
+import { workspaceMode, requireWorkspace, checkedPath, historyPath, toPiPath, workspaceFiles, workspaceEnv, type Workspace } from './workspaces.js';
+
 type TauWs = WsType & { isAlive?: boolean };
 
 let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
@@ -159,7 +163,8 @@ function readBody(req: IncomingMessage): Promise<RpcCommand> {
 let lanUrl = '';
 let tailscaleUrl = '';
 
-function resolveSessionFile(filePath: string) {
+function resolveSessionFile(filePath: string, workspace?: Workspace) {
+  if (workspace) return historyPath(workspace, filePath);
   if (!filePath || typeof filePath !== 'string') throw new Error('filePath required');
   const resolved = path.resolve(filePath);
   const root = path.resolve(SESSIONS_DIR);
@@ -170,8 +175,8 @@ function resolveSessionFile(filePath: string) {
   return resolved;
 }
 
-function appendSessionName(filePath: string, name: string) {
-  const resolved = resolveSessionFile(filePath);
+function appendSessionName(filePath: string, name: string, workspace?: Workspace) {
+  const resolved = resolveSessionFile(filePath, workspace);
   fs.appendFileSync(resolved, JSON.stringify({ type: 'session_info', name, timestamp: new Date().toISOString() }) + '\n');
   return resolved;
 }
@@ -195,6 +200,7 @@ function resolveLiveSessionPath(session: PiRpcSession | null | undefined, reques
     err.status = 404;
     throw err;
   }
+  if (session.workspace) return workspaceFiles(session.workspace, requestedPath || session.cwd);
   const root = fs.realpathSync(path.resolve(session.cwd));
   const candidate = path.resolve(expandHome(requestedPath || session.cwd));
   let resolved = candidate;
@@ -234,6 +240,24 @@ async function refreshSessionModel(session: PiRpcSession | null | undefined) {
 }
 
 async function handleRpcCommand(command: RpcCommand): Promise<RpcResponse> {
+  try {
+    let workspace: Workspace | undefined;
+    if (workspaceMode() && !['get_auth', 'set_auth'].includes(String(command.type))) {
+      const live = command.sessionId ? liveManager.get(command.sessionId) : undefined;
+      if (command.sessionId && !live) throw new Error('Live session not found');
+      if (live && command.workspace_id && live.workspace?.workspace_id !== command.workspace_id) throw new Error('Workspace does not match the live session');
+      workspace = await requireWorkspace(live?.workspace?.workspace_id || command.workspace_id);
+      if (live && (live.terminating || live.identityPending) && ['fork', 'clone', 'new_session', 'switch_session', 'export_html', 'set_session_name', 'navigate_tree'].includes(String(command.type))) throw new Error('Session identity synchronization is pending');
+      if (live && command.filePath && command.filePath !== live.sessionFile) throw new Error('History path does not match the live session');
+      if (live && (live.workspace?.paths.files !== workspace.paths.files || live.workspace?.paths.sessions !== workspace.paths.sessions)) throw new Error('Workspace paths changed during a run');
+    }
+    return await handleScopedRpcCommand(command, workspace);
+  } catch (e) {
+    return { type: 'response', command: command.type, id: command.id, success: false, error: errorMessage(e), ...(command.type === 'prompt' ? { delivery: 'rejected' } : {}) };
+  }
+}
+
+async function handleScopedRpcCommand(command: RpcCommand, workspace?: Workspace): Promise<RpcResponse> {
   const id = command.id;
   const cmd = command.type;
   const success = (data?: unknown): RpcResponse => ({ type: 'response', command: cmd, success: true, id, ...(data !== undefined ? { data } : {}) });
@@ -257,7 +281,11 @@ async function handleRpcCommand(command: RpcCommand): Promise<RpcResponse> {
     }
     return success({ enabled: authEnabled });
   }
-  if (cmd === 'get_available_models') return success({ models: await getAvailableModels() });
+  if (cmd === 'get_available_models') {
+    const live = command.sessionId ? liveManager.get(command.sessionId) : undefined;
+    if (workspace && live) return live.send({ type: 'get_available_models', id });
+    return success({ models: await getAvailableModels(workspace) });
+  }
   if (cmd === 'set_session_name') {
     const name = (command.name || '').trim();
     if (!name) return error('Name cannot be empty');
@@ -265,7 +293,7 @@ async function handleRpcCommand(command: RpcCommand): Promise<RpcResponse> {
     let resolvedFile = null;
     const targetFile = command.filePath || session?.sessionFile;
     if (targetFile) {
-      try { resolvedFile = appendSessionName(targetFile, name); } catch (e) { return error(errorMessage(e)); }
+      try { resolvedFile = appendSessionName(targetFile, name, workspace); } catch (e) { return error(errorMessage(e)); }
     }
     const matchingLive = resolvedFile
       ? Array.from(liveManager.sessions.values()).find((s) => s.sessionFile && path.resolve(s.sessionFile) === resolvedFile)
@@ -292,19 +320,21 @@ async function handleRpcCommand(command: RpcCommand): Promise<RpcResponse> {
   if (cmd === 'export_html') {
     try {
       if (command.sessionId && !session) throw new Error('Live session not found');
-      const sf = command.filePath ? resolveSessionFile(command.filePath) : session?.sessionFile;
+      const sf = command.filePath ? resolveSessionFile(command.filePath, workspace) : session?.sessionFile;
       if (!sf) throw new Error('No session file to export yet');
-      const args = ['--export', sf];
-      if (command.outputPath) args.push(resolveExportOutputPath(command.outputPath, sf));
-      const output = await new Promise<string>((resolve, reject) => {
+      const args = ['--export', workspace ? toPiPath(workspace, sf, 'sessions') : sf];
+      const workspaceOutput = workspace ? resolveExportOutputPath(command.outputPath || sf.replace(/\.jsonl$/, '.html'), sf) : null;
+      if (workspace && workspaceOutput) args.push(toPiPath(workspace, workspaceOutput, 'sessions', true));
+      else if (command.outputPath) args.push(resolveExportOutputPath(command.outputPath, sf));
+      const output = workspace ? (await workspaceCommand(workspace, 'export', args)).stdout : await new Promise<string>((resolve, reject) => {
         execFile(PI_COMMAND, args, { cwd: session?.cwd || path.dirname(sf), timeout: 30000, encoding: 'utf8' }, (err: ExecException | null, stdout: string, stderr: string) => {
           if (err) reject(new Error(stderr || err.message)); else resolve(stdout);
         });
       });
-      let result = output.trim().split('\n').pop() || sf.replace(/\.jsonl$/, '.html');
-      result = path.resolve(expandHome(result));
+      let result = output.trim().split('\n').pop() || (workspace ? toPiPath(workspace, sf, 'sessions') : sf).replace(/\.jsonl$/, '.html');
+      result = workspace && workspaceOutput ? checkedPath(workspace.paths.sessions, workspaceOutput) : path.resolve(expandHome(result));
       if (!fs.existsSync(result)) result = sf.replace(/\.jsonl$/, '.html');
-      return success({ path: result });
+      return success({ path: result, ...(workspace ? { workspace_id: workspace.workspace_id, downloadUrl: `/api/file/download?workspace_id=${encodeURIComponent(workspace.workspace_id)}&history=1&path=${encodeURIComponent(result)}` } : {}) });
     } catch (e) { return error(errorMessage(e)); }
   }
 
@@ -339,6 +369,7 @@ async function handleRpcCommand(command: RpcCommand): Promise<RpcResponse> {
   if (cmd === 'compact' && session.isStreaming) return { ...error('Wait for the reply to finish, or stop it first.'), compactionStarted: false };
 
   const native = new Set(['prompt', 'steer', 'follow_up', 'abort', 'compact', 'set_auto_compaction', 'set_model', 'cycle_model', 'set_thinking_level', 'cycle_thinking_level', 'get_session_stats', 'get_tree', 'get_entries', 'extension_ui_response']);
+  if (workspace) for (const type of ['fork', 'clone', 'new_session', 'switch_session', 'get_fork_messages', 'get_commands']) native.add(type);
   if (!native.has(cmd ?? '')) return error(`Unknown command: ${cmd}`);
 
   // While navigate_tree is moving the child's leaf (pi's stdin loop does not
@@ -458,6 +489,29 @@ function handleApiRoute(req: IncomingMessage, res: ServerResponse, urlPath: stri
   if (!originAllowed) return json(res, 403, { error: 'Origin not allowed' });
 
   const parsed = new URL(`http://localhost${req.url}`);
+  if (parsed.pathname === '/api/workspaces' && !workspaceMode()) return json(res, 200, { enabled: false, workspaces: [] });
+  if (workspaceMode()) {
+    void (async () => {
+      if (await handleWorkspaceApi(req, res, parsed, readBody)) return;
+      const id = parsed.searchParams.get('sessionId') || /^\/api\/live-sessions\/([^/]+)/.exec(parsed.pathname)?.[1];
+      if (id) {
+        const session = liveManager.get(decodeURIComponent(id));
+        if (!session) throw new Error('Live session not found');
+        if (parsed.pathname.startsWith('/api/file') && (session.terminating || session.identityPending)) throw new Error('Session identity synchronization is pending');
+        const explicit = parsed.searchParams.get('workspace_id');
+        if (explicit && explicit !== session.workspace?.workspace_id) throw new Error('Workspace does not match the live session');
+        const workspace = await requireWorkspace(session.workspace?.workspace_id);
+        if (workspace.paths.files !== session.cwd || workspace.paths.sessions !== session.workspace?.paths.sessions) throw new Error('Workspace paths changed during a run');
+      }
+      if (parsed.pathname === '/api/open') throw new Error('Use the workspace download link to open this file');
+      handleLegacyApiRoute(req, res, parsed);
+    })().catch(e => json(res, 400, { error: errorMessage(e) }));
+    return;
+  }
+  return handleLegacyApiRoute(req, res, parsed);
+}
+
+function handleLegacyApiRoute(req: IncomingMessage, res: ServerResponse, parsed: URL) {
   const cleanPath = parsed.pathname;
 
   if (cleanPath === '/api/health') return json(res, 200, { status: 'ok', role: 'rpc-session-manager', liveSessionCount: liveManager.sessions.size, lanUrl, tailscaleUrl: tailscaleUrl || undefined, platform: process.platform });
@@ -563,7 +617,7 @@ function handleApiRoute(req: IncomingMessage, res: ServerResponse, urlPath: stri
     if (!session) return json(res, 404, { error: 'Live session not found' });
     try {
       const dirPath = resolveLiveSessionPath(session, explicitPath || session.cwd);
-      return serveFileList(res, dirPath);
+      return serveFileList(res, dirPath, session.workspace);
     } catch (e) { return json(res, errorStatus(e), { error: errorMessage(e) }); }
   }
   if (cleanPath === '/api/file/text' && req.method === 'GET') {
@@ -802,22 +856,23 @@ function serveSessionFile(res: ServerResponse, dirName: string, file: string) {
 }
 
 const IGNORED_NAMES = new Set(['node_modules', '.git', '__pycache__', '.DS_Store', '.Trash', '.next', '.nuxt', 'dist', 'build', '.cache', '.turbo', 'venv', '.venv', 'env', '.env.local', '.pi', 'coverage', '.nyc_output', '.parcel-cache']);
-function serveFileList(res: ServerResponse, dirPath: string) {
+function serveFileList(res: ServerResponse, dirPath: string, workspace?: Workspace) {
   try {
     dirPath = path.resolve(expandHome(dirPath));
     if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return json(res, 400, { error: 'Not a directory' });
     const items = [];
     for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+      if (workspaceMode() && entry.isSymbolicLink()) continue;
       if (entry.name.startsWith('.') && entry.name !== '.env') continue;
       if (IGNORED_NAMES.has(entry.name)) continue;
       try {
         const fullPath = path.join(dirPath, entry.name);
         const stat = fs.statSync(fullPath);
-        items.push({ name: entry.name, path: fullPath, isDirectory: entry.isDirectory(), size: entry.isDirectory() ? null : stat.size, mtime: stat.mtimeMs });
+        items.push({ name: entry.name, path: workspace ? toPiPath(workspace, fullPath, 'files') : fullPath, isDirectory: entry.isDirectory(), size: entry.isDirectory() ? null : stat.size, mtime: stat.mtimeMs });
       } catch {}
     }
     items.sort((a, b) => a.isDirectory !== b.isDirectory ? (a.isDirectory ? -1 : 1) : a.name.localeCompare(b.name));
-    json(res, 200, { path: dirPath, items });
+    json(res, 200, { path: workspace ? toPiPath(workspace, dirPath, 'files') : dirPath, items });
   } catch (e) { json(res, 500, { error: errorMessage(e) }); }
 }
 
@@ -1014,7 +1069,7 @@ setInterval(() => {
 
 function listen(port: number, attemptsLeft = 10) {
   server.once('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE' && attemptsLeft > 0) {
+    if (err.code === 'EADDRINUSE' && attemptsLeft > 0 && !workspaceMode()) {
       console.log(`[Tau] Port ${port} in use, trying ${port + 1}...`);
       server.removeAllListeners('error');
       listen(port + 1, attemptsLeft - 1);

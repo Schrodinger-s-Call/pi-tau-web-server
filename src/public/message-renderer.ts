@@ -33,6 +33,7 @@ type RenderMessage = {
 export class MessageRenderer {
   container: HTMLElement;
   isNearBottom: boolean;
+  fileContext?: () => string | undefined;
   nexusContext?: (message: HTMLElement) => NexusContext | undefined;
   /** Text of history thinking blocks that have not been opened yet. */
   private unopenedThinking = new WeakMap<Element, string>();
@@ -109,6 +110,7 @@ export class MessageRenderer {
       <div class="message-content">${imagesHtml}${renderUserMarkdown(message.content as string)}</div>
       <button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     `;
+    this.bindFileLinks(div);
     this._setupCopyBtn(div);
     target.appendChild(div);
     if (!isHistory) this.scrollToBottom();
@@ -172,11 +174,29 @@ export class MessageRenderer {
       div.querySelectorAll(':scope > .message-content > .thinking-block > .thinking-content')
         .forEach((element, index) => this.unopenedThinking.set(element, thinkingTexts[index]));
     }
+    this.bindFileLinks(div);
     if (!isStreaming) this._setupCopyBtn(div);
     target.appendChild(div);
     if (!isHistory) this.scrollToBottom();
 
     return div;
+  }
+
+  private bindFileLinks(message: HTMLElement) {
+    const workspace = message.dataset.workspaceId || this.fileContext?.();
+    if (!workspace) return;
+    message.dataset.workspaceId = workspace;
+    for (const image of message.querySelectorAll<HTMLImageElement>('img.inline-image[src]')) {
+      const source = image.getAttribute('src') || '';
+      if (!source || /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/api\/)/i.test(source)) continue;
+      image.src = `/api/file/image?${new URLSearchParams({ workspace_id: workspace, path: source })}`;
+    }
+    for (const link of message.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+      const href = link.getAttribute('href') || '';
+      if (!href || /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/api\/)/i.test(href)) continue;
+      link.href = `/api/file/download?${new URLSearchParams({ workspace_id: workspace, path: href })}`;
+      link.download = '';
+    }
   }
 
   private fillThinking(content: Element) {
@@ -249,6 +269,7 @@ export class MessageRenderer {
     } else {
       contentDiv.innerHTML = rendered;
     }
+    this.bindFileLinks(contentDiv.closest<HTMLElement>('.message') || contentDiv as HTMLElement);
     this.scrollToBottom();
   }
 
@@ -275,6 +296,8 @@ export class MessageRenderer {
         renderNexusMessage(text, contentDiv as HTMLElement, this.nexusContext?.(messageElement));
       }
     }
+
+    this.bindFileLinks(messageElement);
 
     // Add copy button after streaming finishes
     if (!messageElement.querySelector('.message-copy-btn')) {

@@ -1,3 +1,4 @@
+import { workspaceEnabled, downloadWorkspaceFile } from './workspaces.js';
 /**
  * File Browser — right sidebar file tree with drag-and-drop
  */
@@ -194,6 +195,7 @@ export class FileBrowser {
     try {
       const sessionId = this.getSessionId?.();
       if (!sessionId) return;
+      if (workspaceEnabled) { downloadWorkspaceFile(sessionId, filePath); return; }
       await fetch('/api/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

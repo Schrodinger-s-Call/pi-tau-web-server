@@ -36,6 +36,7 @@ export type ModelIdentity = {
 };
 export type ParsedModelSpec = { model: ModelIdentity | null; level: string | null };
 export type RpcCommand = {
+  workspace_id?: string;
   id?: string;
   type?: string;
   sessionId?: string;

@@ -7,7 +7,11 @@ import type { ChildProcess } from 'node:child_process';
 import type { AbortState, JsonRecord, LiveClient, ModelIdentity, PendingCommand, PendingDialog, RpcCommand, RpcResponse } from './types.js';
 import { PI_COMMAND, expandHome } from './config.js';
 import { modelLabel, normalizeModel, parseModelSpecToModel } from './model-utils.js';
-import { NAVIGATE_COMMAND } from './tree.js';
+import { NAVIGATE_COMMAND, flattenTree, pathFromRoot } from './tree.js';
+import { workspaceMode, requireWorkspace, workspaceEnv, toPiPath, fromPiPath, readFrames, validateReady, validateHistoryIdentity, type Workspace, type Ready } from './workspaces.js';
+import { validateControl, validId } from './workspace-protocol.js';
+import { RunIdentity } from './run-identity.js';
+import type { Readable } from 'node:stream';
 
 type DialogEntry = { request: PendingDialog; timer?: ReturnType<typeof setTimeout>; duringTurn: boolean; responding?: boolean };
 
@@ -89,6 +93,15 @@ export function isGenericSessionName(name: unknown) {
 }
 
 export class PiRpcSession {
+  workspace?: Workspace;
+  run?: Ready;
+  piSessionId: string | null = null;
+  identity?: RunIdentity;
+  historySyncPending = false;
+  identityProbePending = false;
+  private historyRefreshPromise?: Promise<void>;
+  private historyRefreshTimer?: ReturnType<typeof setTimeout>;
+  private identityOperation: Promise<unknown> = Promise.resolve();
   manager: LiveSessionManager;
   id: string;
   cwd: string;
@@ -130,8 +143,9 @@ export class PiRpcSession {
   private operationRevision = 0;
   private abortOperationRevision = 0;
 
-  constructor(manager: LiveSessionManager, opts: { id?: string; cwd: string; modelSpec?: string; sessionFile?: string | null; entries?: JsonRecord[]; sessionName?: string | null }) {
+  constructor(manager: LiveSessionManager, opts: { workspace?: Workspace; id?: string; cwd: string; modelSpec?: string; sessionFile?: string | null; entries?: JsonRecord[]; sessionName?: string | null }) {
     this.manager = manager;
+    this.workspace = opts.workspace;
     this.id = opts.id || makeId();
     this.cwd = opts.cwd;
     this.modelSpec = opts.modelSpec || '';
@@ -158,9 +172,12 @@ export class PiRpcSession {
     this.navigateCommandChecked = false;
   }
 
+  get identityPending() { return this.identityProbePending || (this.identity?.pending ?? false); }
+
   metadata() {
     return {
       id: this.id,
+      ...(this.workspace ? { workspace_id: this.workspace.workspace_id, workspace_name: this.workspace.display_name, pi_session_id: this.piSessionId, run: this.run, identity_sync_pending: this.identityPending, history_sync_pending: this.historySyncPending } : {}),
       pid: this.pid,
       cwd: this.cwd,
       modelSpec: this.modelSpec,
@@ -301,15 +318,16 @@ export class PiRpcSession {
     if (!fs.existsSync(this.cwd) || !fs.statSync(this.cwd).isDirectory()) {
       throw new Error(`Directory not found: ${this.cwd}`);
     }
+    const resumeFile = this.sessionFile;
     const args = ['--mode', 'rpc', '--extension', TAU_TREE_EXTENSION];
-    if (this.sessionFile) args.push('--session', this.sessionFile);
+    if (this.sessionFile) args.push('--session', this.workspace ? toPiPath(this.workspace, this.sessionFile, 'sessions') : this.sessionFile);
     if (this.modelSpec) args.push('--model', this.modelSpec);
     this.navigateCommandChecked = false;
     const spawnFn: SpawnFn = _spawnPiForTest || spawn;
     const child = spawnFn(PI_COMMAND, args, {
       cwd: this.cwd,
-      env: { ...process.env, TAU_DISABLED: '1' },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      env: this.workspace ? workspaceEnv(this.workspace) : { ...process.env, TAU_DISABLED: '1' },
+      stdio: this.workspace ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
     this.pid = child.pid || null;
@@ -322,6 +340,61 @@ export class PiRpcSession {
     });
     child.on('error', (err: Error) => this.handleExit(null, null, err));
     child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => this.handleExit(code, signal));
+
+    if (this.workspace) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const metadata = child.stdio[3] as Readable | null;
+          const timer = setTimeout(() => fail(new Error('Pi ready metadata timed out')), 130000);
+          let done = false;
+          const cleanup = () => { clearTimeout(timer); child.off('exit', exited); child.off('error', fail); };
+          const fail = (error: Error) => { if (!done) { done = true; cleanup(); reject(error); } };
+          const exited = () => fail(new Error('Pi exited before becoming ready'));
+          child.once('exit', exited);
+          child.once('error', fail);
+          if (!metadata) return fail(new Error('Pi metadata pipe is missing'));
+          metadata.once('end', () => { if (!this.run) fail(new Error('Pi metadata pipe closed before ready')); });
+          readFrames(metadata, frame => {
+            if (done) {
+              try {
+                validateControl(frame);
+                if (frame.type === 'error') { void this.terminate('runtime_error'); return; }
+                if (frame.type !== 'completed' || frame.run_id !== this.run?.run_id || frame.workspace_id !== this.workspace?.workspace_id || frame.kind !== 'rpc' || JSON.stringify(frame.actual_bundle) !== JSON.stringify(this.run?.actual_bundle)) throw new Error('Invalid completion');
+              } catch { void this.terminate('invalid_runtime_metadata'); }
+              return;
+            }
+            try {
+              if (frame?.type === 'error' && frame.protocol_version === 1) throw Object.assign(new Error(typeof frame.message === 'string' ? frame.message : 'Pi startup failed'), { code: frame.code });
+              this.run = validateReady(frame, this.workspace!);
+              const readyParent = path.dirname(fromPiPath(this.workspace!, this.run.session_file, 'sessions', true));
+              if (!fs.statSync(readyParent).isDirectory()) throw new Error('History parent is missing');
+              if (resumeFile && resumeFile !== fromPiPath(this.workspace!, this.run.session_file, 'sessions')) throw new Error('Resumed history does not match ready');
+              const readyLocal = fromPiPath(this.workspace!, this.run.session_file, 'sessions', true);
+              if (fs.existsSync(readyLocal)) validateHistoryIdentity(this.workspace!, this.run.session_id, this.run.session_file);
+              this.identity = new RunIdentity(this.run.run_id, this.workspace!.workspace_id, () => this.manager.broadcastUpdated(this.id), () => {
+                this.historySyncPending = true;
+                this.manager.broadcastUpdated(this.id);
+                void this.terminate('identity_sync_failed');
+              }, identity => validateHistoryIdentity(this.workspace!, identity.session_id, identity.session_file));
+              this.identity.initialize({ session_id: this.run.session_id, session_file: this.run.session_file });
+              this.piSessionId = this.run.session_id;
+              this.sessionFile = fromPiPath(this.workspace!, this.run.session_file, 'sessions', true);
+              done = true;
+              cleanup();
+              resolve();
+            } catch (error) { fail(error as Error); }
+          }, error => { if (done) void this.terminate('invalid_runtime_metadata'); else fail(error); });
+        });
+        const state = await this.send({ type: 'get_state' }, { timeoutMs: 5000 });
+        if (state.success !== true || !this.piSessionId) throw new Error('Pi did not report its session identity');
+        if (this.terminating || child.exitCode !== null || child.signalCode) throw new Error('Pi exited during startup');
+        return;
+      } catch (error) {
+        await this.terminate('startup_failed');
+        this.identity?.stop();
+        throw error;
+      }
+    }
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -367,14 +440,46 @@ export class PiRpcSession {
     }, 250);
   }
 
-  send(command: RpcCommand, opts: { timeoutMs?: number } = {}) {
+  send(command: RpcCommand, opts: { timeoutMs?: number } = {}): Promise<RpcResponse> {
+    if (this.workspace && ['fork', 'clone', 'new_session', 'switch_session'].includes(String(command.type))) {
+      const operation = this.identityOperation.catch(() => {}).then(async () => {
+        if (this.terminating || this.identityPending) throw new Error('Session identity synchronization is pending');
+        const outbound = { ...command };
+        for (const key of ['sessionPath', 'parentSession']) {
+          if (typeof outbound[key] === 'string') {
+            const target = String(outbound[key]);
+            const local = target.startsWith('/root/.pi/agent/sessions/') ? fromPiPath(this.workspace!, target, 'sessions') : target;
+            const header = JSON.parse(fs.readFileSync(local, 'utf8').split('\n')[0]);
+            if (header.type !== 'session' || !validId(header.id)) throw new Error('Invalid history identity');
+            const owner = Array.from(this.manager.sessions.values()).find(session => session.workspace?.workspace_id === this.workspace!.workspace_id && (session.sessionFile === local || session.piSessionId === header.id));
+            if (owner && owner !== this) throw new Error('History is already in use');
+            outbound[key] = toPiPath(this.workspace!, local, 'sessions');
+          }
+        }
+        const response = await this.sendRaw(outbound, opts);
+        const state = await this.sendRaw({ type: 'get_state' }, { timeoutMs: 5000 });
+        if (state.success !== true) throw new Error('Pi changed history but its identity could not be checked');
+        if (response.success === true && !(response.data as any)?.cancelled) {
+          await this.refreshIdentityHistory().catch(() => {});
+        }
+        return response;
+      });
+      this.identityOperation = operation;
+      return operation;
+    }
+    return this.sendRaw(command, opts);
+  }
+
+  private sendRaw(command: RpcCommand, opts: { timeoutMs?: number } = {}) {
     const child = this.child;
+    if (this.workspace && this.identityPending && ['fork', 'clone', 'new_session', 'switch_session', 'export_html', 'set_session_name', 'navigate_tree'].includes(String(command.type))) return Promise.reject(new Error('Session identity synchronization is pending'));
     if (!child || !child.stdin!.writable || this.terminating) {
       return Promise.reject(new Error('Pi RPC session is not running'));
     }
     const id = command.id || `cmd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const outbound = { ...command, id };
     delete outbound.sessionId;
+    delete outbound.workspace_id;
     const timeoutMs = opts.timeoutMs ?? 60000;
     return new Promise<RpcResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -527,7 +632,9 @@ export class PiRpcSession {
   updateStateFromResponse(resp: PiRpcMessage) {
     const data: PiRpcPayload = resp.data || resp.result || resp;
     const command = resp.command || data.command;
-    if (data.sessionFile) this.sessionFile = data.sessionFile;
+    if (this.workspace) {
+      if (command === 'get_state' && resp.success === true) this.acceptIdentity(data);
+    } else if (data.sessionFile) this.sessionFile = data.sessionFile;
     if (data.sessionName) this.setSessionName(data.sessionName);
     if (data.contextUsage) this.contextUsage = data.contextUsage;
     if (data.model) this.model = normalizeModel(data.model);
@@ -542,7 +649,79 @@ export class PiRpcSession {
     this.touch(true);
   }
 
+  private acceptIdentity(data: PiRpcPayload) {
+    if (!this.workspace) return;
+    if (!validId(data.sessionId)) { void this.terminate('invalid_session_identity'); return; }
+    try {
+      const file = typeof data.sessionFile === 'string' ? data.sessionFile : null;
+      if (file && !file.endsWith('.jsonl')) throw new Error('Invalid session file');
+      const local = file ? fromPiPath(this.workspace, file, 'sessions', true) : null;
+      const previous = this.piSessionId;
+      this.piSessionId = data.sessionId;
+      this.sessionFile = local;
+      if (!file) throw new Error('Pi session file is required');
+      const identity = { session_id: data.sessionId, session_file: file };
+      if (this.identity) this.identity.update(identity);
+      if (previous && previous !== data.sessionId && this.run) {
+        this.entries = [];
+        this.historyEpoch++;
+        this.userMessages = [];
+        this.titleSet = false;
+        this.sessionName = null;
+        this.historySyncPending = true;
+        this.manager.broadcast({ type: 'live_session_snapshot', sessionId: this.id, ...this.snapshot() });
+        void this.refreshIdentityHistory().catch(() => {});
+      }
+      this.manager.broadcastUpdated(this.id);
+    } catch {
+      void this.terminate('invalid_session_identity');
+    }
+  }
+
+  private refreshIdentityHistory(): Promise<void> {
+    if (this.historyRefreshPromise) return this.historyRefreshPromise;
+    if (this.historyRefreshTimer) clearTimeout(this.historyRefreshTimer);
+    const identity = this.piSessionId;
+    this.historySyncPending = true;
+    const refresh = (async () => {
+      const tree = await this.sendRaw({ type: 'get_tree' }, { timeoutMs: 5000 });
+      if (this.piSessionId !== identity) return;
+      const data = tree.data as any;
+      if (tree.success !== true || !Array.isArray(data?.tree)) throw new Error('Pi history could not be refreshed');
+      const state = await this.sendRaw({ type: 'get_state' }, { timeoutMs: 5000 });
+      if (this.piSessionId !== identity) return;
+      if (state.success !== true) throw new Error('Pi identity could not be checked after refreshing history');
+      this.entries = pathFromRoot(flattenTree(data.tree), data.leafId ?? null) as unknown as JsonRecord[];
+      this.historyEpoch++;
+      this.historySyncPending = false;
+      this.manager.broadcast({ type: 'live_session_snapshot', sessionId: this.id, ...this.snapshot() });
+    })().finally(() => {
+      this.historyRefreshPromise = undefined;
+      this.manager.broadcastUpdated(this.id);
+      if (this.historySyncPending && !this.terminating && this.child?.exitCode === null && !this.child.signalCode) {
+        this.historyRefreshTimer = setTimeout(() => { void this.refreshIdentityHistory().catch(() => {}); }, 1000);
+        this.historyRefreshTimer.unref();
+      }
+    });
+    this.historyRefreshPromise = refresh;
+    return refresh;
+  }
+
   handleEvent(event: PiRpcMessage) {
+    if (event.type === 'extension_ui_request' && event.method === 'setStatus' && event.statusKey === 'tau_session_identity') {
+      try {
+        const observed = JSON.parse(String(event.statusText));
+        if (!this.run) this.acceptIdentity(observed);
+        else if (this.workspace) {
+          this.identityProbePending = true;
+          void this.sendRaw({ type: 'get_state' }, { timeoutMs: 5000 }).then(response => {
+            if (response.success !== true) throw new Error('Identity probe failed');
+            this.identityProbePending = false;
+          }).catch(() => { void this.terminate('identity_probe_failed'); });
+        }
+      } catch { void this.terminate('invalid_session_identity'); }
+      return;
+    }
     this.touch(false);
     const type = event.type;
     if (type === 'extension_ui_request' && ['confirm', 'select', 'input', 'editor'].includes(String(event.method))) {
@@ -580,7 +759,7 @@ export class PiRpcSession {
       this.lastExtensionError = String(event.error);
     }
     if (event.contextUsage) this.contextUsage = event.contextUsage;
-    if (event.sessionFile) this.sessionFile = event.sessionFile;
+    if (!this.workspace && event.sessionFile) this.sessionFile = event.sessionFile;
     if (type === 'session_name' && event.name) {
       if (!this.setSessionName(event.name)) return;
       event.name = this.sessionName || event.name;
@@ -667,6 +846,8 @@ export class PiRpcSession {
   async terminate(reason = 'closed') {
     if (this.terminating) return;
     this.terminating = true;
+    this.identity?.stop();
+    if (this.historyRefreshTimer) clearTimeout(this.historyRefreshTimer);
     this.compaction = null;
     this.clearDialogs('terminated');
     for (const [, pending] of this.pending) {
@@ -685,6 +866,8 @@ export class PiRpcSession {
   handleExit(code: number | null, signal: string | null, err?: { message?: string }) {
     if (this.exitCode !== null) return;
     this.exitCode = code;
+    this.identity?.stop();
+    if (this.historyRefreshTimer) clearTimeout(this.historyRefreshTimer);
     this.compaction = null;
     this.clearDialogs('process_exit');
     for (const [, pending] of this.pending) {
@@ -728,15 +911,17 @@ export class LiveSessionManager {
   }
   hasPendingResume(sessionFile: string) { return this.pendingResumes.has(path.resolve(sessionFile)); }
   hasTerminatingResume(sessionFile: string) { return this.terminatingResumes.has(path.resolve(sessionFile)); }
-  async create({ cwd, model }: { cwd?: string; model?: string }) {
+  async create({ cwd, model, workspace_id }: { cwd?: string; model?: string; workspace_id?: string }) {
+    const workspace = workspaceMode() ? await requireWorkspace(workspace_id) : undefined;
+    if (workspace) cwd = workspace.paths.files;
     const resolved = path.resolve(expandHome(cwd || process.cwd()));
-    const session = new PiRpcSession(this, { cwd: resolved, modelSpec: (model || '').trim() });
+    const session = new PiRpcSession(this, { workspace, cwd: resolved, modelSpec: (model || '').trim() });
     await session.start();
     this.sessions.set(session.id, session);
     this.broadcast({ type: 'live_session_created', session: session.metadata() });
     return session;
   }
-  async resume({ sessionFile, cwd, model, entries, sessionName }: { sessionFile: string; cwd: string; model?: string; entries?: JsonRecord[]; sessionName?: string | null }) {
+  async resume({ sessionFile, cwd, model, entries, sessionName, workspace }: { workspace?: Workspace; sessionFile: string; cwd: string; model?: string; entries?: JsonRecord[]; sessionName?: string | null }) {
     const resolved = path.resolve(sessionFile);
     const existing = this.findBySessionFile(resolved);
     if (existing) return existing;
@@ -748,7 +933,7 @@ export class LiveSessionManager {
         if (terminating) await terminating.catch(() => {});
         const afterTerminationExisting = this.findBySessionFile(resolved);
         if (afterTerminationExisting) return afterTerminationExisting;
-        const session = new PiRpcSession(this, { cwd, modelSpec: (model || '').trim(), sessionFile: resolved, entries, sessionName });
+        const session = new PiRpcSession(this, { workspace, cwd, modelSpec: (model || '').trim(), sessionFile: resolved, entries, sessionName });
         await session.start();
         this.sessions.set(session.id, session);
         this.broadcast({ type: 'live_session_created', session: session.metadata() });

@@ -311,3 +311,33 @@ For diagnosis, `TAU_INTERACTION_DIAGNOSTICS=1` logs dialog creation/resolution a
 ## License
 
 MIT
+
+
+## Workspaces managed by run_tau
+
+Set `TAU_WORKSPACE_MODE=bridge` when running with a launcher that implements
+[workspace protocol version 1](docs/workspace-protocol.md). Set `GPAS_TAU_SOCKET`
+if the user socket is not at `/run/gpas-tau/bridge.sock`, and set `TAU_PI_COMMAND`
+to the launcher's Pi bridge executable. The launcher mounts each workspace's
+materials and history at the paths it reports. Tau does not read host paths or
+account credentials from the launcher.
+
+The sidebar and new-conversation form let you select a registered workspace.
+The conversation shows its workspace, its running bundle, and the workspace's
+current bundle. Updating a bundle does not restart a conversation. Reconnecting
+a browser keeps the existing Pi process. Starting or resuming a stopped
+conversation uses the workspace's current bundle.
+
+File previews, report downloads, and uploads belong to their conversation's
+workspace. Uploads accept files up to 10 MiB and do not overwrite existing files.
+Historical operations carry a workspace ID, so copied histories with the same Pi
+session ID remain separate. Workspaces and bundles are managed by the launcher;
+Tau does not create or delete them.
+
+The runtime persists run records. Tau reports identity changes after forks and
+history switches and shows when an update is still waiting for acknowledgement.
+Workspace mode requires the Pi lifecycle API exercised by the Pi 1.5.0 integration
+test, including `session_start` for new, resumed, and forked sessions. The
+agent-bundle 1.1.0 image also passed isolated launcher and browser integration.
+Validate real accounts and public skills before deployment. No data migration is
+performed by enabling this setting. Leave it unset for an ordinary Tau deployment.

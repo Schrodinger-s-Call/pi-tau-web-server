@@ -1,3 +1,4 @@
+import { workspaceQuery, workspacesReady, selectedWorkspace } from './workspaces.js';
 /**
  * Session Sidebar - Lists sessions grouped by project, handles switching
  */
@@ -110,7 +111,8 @@ export class SessionSidebar {
           '<div class="session-skeleton"><div class="session-skeleton-title"></div><div class="session-skeleton-meta"></div></div>'
         ).join('');
       }
-      const res = await fetch('/api/sessions');
+      await workspacesReady;
+      const res = await fetch(`/api/sessions?${workspaceQuery()}`);
       const data = await res.json();
       // A later load started while this one was in flight; its list is newer.
       if (request !== this._loadRequest) return;
@@ -187,7 +189,7 @@ export class SessionSidebar {
     if (query !== this.searchQuery) return;
 
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&${workspaceQuery()}`);
       const data = await res.json();
       if (query !== this.searchQuery) return; // stale
 
@@ -252,7 +254,7 @@ export class SessionSidebar {
           }
         }
         // Session not in loaded list (unlikely) — try switching by path
-        this.onSessionSelect({ filePath: result.filePath, name: result.sessionName }, { path: result.project });
+        this.onSessionSelect({ filePath: result.filePath, name: result.sessionName, workspace_id: result.workspace_id }, { path: result.project, workspace_id: result.workspace_id });
       });
 
       sessionsDiv.appendChild(item);
@@ -316,7 +318,7 @@ export class SessionSidebar {
   arrange(): ArrangedEntry[] {
     return arrangeProjects<SidebarSession, SidebarProject>({
       projects: this.projects,
-      openTabs: this.openTabs,
+      openTabs: selectedWorkspace ? this.openTabs.filter(tab => tab.workspace_id === selectedWorkspace) : this.openTabs,
       isExpanded: project => this.expandedProjects.has(this.projectKey(project)),
       searching: !!this.searchQuery,
     });
@@ -440,7 +442,7 @@ export class SessionSidebar {
           await fetch('/api/rpc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'set_session_name', name: newName, filePath: session.filePath }),
+            body: JSON.stringify({ type: 'set_session_name', name: newName, filePath: session.filePath, workspace_id: session.workspace_id }),
           });
           // Keep the stored name so a later rebuild of the rows shows it.
           session.name = newName;
@@ -467,7 +469,7 @@ export class SessionSidebar {
       const res = await fetch('/api/sessions/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath: session.filePath }),
+        body: JSON.stringify({ filePath: session.filePath, workspace_id: session.workspace_id }),
       });
       if (res.ok) {
         // Drop the session from the stored list so the rows can be rebuilt
@@ -503,9 +505,11 @@ export class SessionSidebar {
       const data = await (await fetch('/api/rpc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'export_html', filePath: session.filePath }),
+        body: JSON.stringify({ type: 'export_html', filePath: session.filePath, workspace_id: session.workspace_id }),
       })).json();
-      if (data?.success && data.data?.path) {
+      if (data?.success && data.data?.downloadUrl) {
+        const link = document.createElement('a'); link.href = data.data.downloadUrl; link.download = ''; link.click();
+      } else if (data?.success && data.data?.path) {
         await fetch('/api/open', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -565,6 +569,7 @@ export class SessionSidebar {
       name: tab.name,
       timestamp: new Date(tab.openedAt).toISOString(),
       liveSessionId: tab.id,
+      workspace_id: tab.workspace_id,
     };
   }
 
@@ -618,7 +623,7 @@ export class SessionSidebar {
       header.className = `project-header${isCollapsed ? ' collapsed' : ''}`;
 
       const pathParts = (project.path || '').split('/').filter(Boolean);
-      const shortPath = pathParts.length > 0 ? pathParts[pathParts.length - 1] : (project.path || '');
+      const shortPath = typeof project.name === 'string' ? project.name : pathParts.length > 0 ? pathParts[pathParts.length - 1] : (project.path || '');
 
       header.innerHTML = `
         <span class="chevron">▼</span>
