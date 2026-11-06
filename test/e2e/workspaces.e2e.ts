@@ -51,3 +51,53 @@ test('workspace selection cannot change a conversation report link or its runnin
   assert.equal(created.workspace_id, 'exp1');
   await assertNoPageErrors(errors);
 });
+
+test('runtime file previews and downloads retain their run and explain unavailable contents', async t => {
+  if (skipUnlessBrowser(t)) return;
+  const { page, session, errors } = await openNestedPage(t, { blockServiceWorkers: true });
+  const bundle = { name: 'old-bundle', sha256: 'a'.repeat(64), commit: null };
+  const workspace = { workspace_id: 'debug', display_name: 'Debug', paths: { files: session.cwd, sessions: '/test/history' }, current_bundle: bundle };
+  session.workspace = workspace;
+  session.run = { run_id: 'd'.repeat(32), actual_bundle: bundle };
+  t.after(() => { session.workspace = undefined; session.run = undefined; });
+  await page.route('**/api/workspaces', route => route.fulfill({ json: { enabled: true, revision: 1, workspaces: [workspace, { ...workspace, workspace_id: 'exp1' }] } }));
+  await page.evaluate(async () => { const module = await import(String('/workspaces.js')); await module.refreshWorkspaces(); });
+  liveManager.broadcastUpdated(session.id);
+  await page.route('**/api/files?**', route => route.fulfill({ json: { path: '/workspace', items: [
+    { name: 'AGENTS.md', path: '/workspace/AGENTS.md', isDirectory: false, size: 16, runtime_readonly: true },
+    { name: 'RUNTIME.json', path: '/workspace/RUNTIME.json', isDirectory: false, size: null, runtime_readonly: true, unavailable: 'Runtime file unavailable: run_tau does not support run-file' },
+  ] } }));
+  const requests: URL[] = [];
+  await page.route('**/api/file/text?**', route => {
+    const url = new URL(route.request().url()); requests.push(url);
+    return route.fulfill(url.searchParams.get('path') === '/workspace/AGENTS.md'
+      ? { json: { text: '# Old bundle', runtime_readonly: true, run_id: session.run.run_id, workspace_id: 'debug' } }
+      : { status: 400, json: { error: 'Runtime file unavailable: run_tau does not support run-file' } });
+  });
+  let downloaded: URL | undefined;
+  await page.route('**/api/file/download?**', route => {
+    downloaded = new URL(route.request().url());
+    return route.fulfill({ body: '# Old bundle', contentType: 'text/plain' });
+  });
+  await page.click('#file-sidebar-toggle');
+  await page.locator('.file-item[data-name="AGENTS.md"]').click();
+  await page.locator('#file-preview h1').waitFor();
+  assert.match(await page.locator('.file-preview-toolbar').textContent() || '', /运行时只读文件/);
+  await page.locator('#sidebar > .workspace-select').selectOption('exp1');
+  const downloadEvent = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download', exact: true }).click();
+  await downloadEvent;
+  assert.equal(downloaded?.searchParams.get('sessionId'), session.id);
+  assert.equal(downloaded?.searchParams.get('run_id'), session.run.run_id);
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.locator('#file-preview h1').waitFor();
+  assert.equal(requests.at(-1)?.searchParams.get('run_id'), session.run.run_id);
+  assert.ok(requests.every(url => url.searchParams.get('sessionId') === session.id));
+  const unavailable = page.locator('.file-item[data-name="RUNTIME.json"]');
+  assert.match(await unavailable.textContent() || '', /Unavailable/);
+  assert.doesNotMatch(await unavailable.textContent() || '', /0B/);
+  await unavailable.click();
+  await page.waitForFunction(() => document.querySelector('.file-preview-status')?.textContent?.includes('run_tau does not support'));
+  assert.equal(await page.getByRole('button', { name: 'Download', exact: true }).isDisabled(), true);
+  await assertNoPageErrors(errors);
+});

@@ -34,6 +34,13 @@ export function validateControl(frame: any) {
         if (!validId(w.workspace_id) || typeof w.display_name !== 'string' || typeof w.paths.files !== 'string' || typeof w.paths.sessions !== 'string' || !validBundle(w.current_bundle)) throw protocolError();
       }
       return frame;
+    case 'run-file': {
+      objectFields(frame, [...common, 'run_id', 'workspace_id', 'name', 'actual_bundle', 'size', 'content_base64']);
+      if (!validRunId(frame.run_id) || !validId(frame.workspace_id) || !['AGENTS.md', 'RUNTIME.json'].includes(frame.name) || !validBundle(frame.actual_bundle) || !number(frame.size) || frame.size > 128 * 1024 || typeof frame.content_base64 !== 'string') throw protocolError();
+      const bytes = Buffer.from(frame.content_base64, 'base64');
+      if (bytes.length !== frame.size || bytes.toString('base64') !== frame.content_base64) throw protocolError();
+      return frame;
+    }
     case 'run-info': {
       objectFields(frame, [...common, 'run']);
       const run = frame.run;

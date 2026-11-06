@@ -8,6 +8,7 @@
  */
 
 import http from 'node:http';
+import { RUNTIME_FILES, readRuntimeFile } from './runtime-files.js';
 import { readTextFile } from './text-file.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -617,7 +618,7 @@ function handleLegacyApiRoute(req: IncomingMessage, res: ServerResponse, parsed:
     if (!session) return json(res, 404, { error: 'Live session not found' });
     try {
       const dirPath = resolveLiveSessionPath(session, explicitPath || session.cwd);
-      return serveFileList(res, dirPath, session.workspace);
+      return void serveFileList(res, dirPath, session.workspace, session);
     } catch (e) { return json(res, errorStatus(e), { error: errorMessage(e) }); }
   }
   if (cleanPath === '/api/file/text' && req.method === 'GET') {
@@ -856,11 +857,12 @@ function serveSessionFile(res: ServerResponse, dirName: string, file: string) {
 }
 
 const IGNORED_NAMES = new Set(['node_modules', '.git', '__pycache__', '.DS_Store', '.Trash', '.next', '.nuxt', 'dist', 'build', '.cache', '.turbo', 'venv', '.venv', 'env', '.env.local', '.pi', 'coverage', '.nyc_output', '.parcel-cache']);
-function serveFileList(res: ServerResponse, dirPath: string, workspace?: Workspace) {
+async function serveFileList(res: ServerResponse, dirPath: string, workspace?: Workspace, session?: PiRpcSession) {
+  if (workspace) res.setHeader('Cache-Control', 'no-store');
   try {
     dirPath = path.resolve(expandHome(dirPath));
     if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return json(res, 400, { error: 'Not a directory' });
-    const items = [];
+    const items: { name: string; path: string; isDirectory: boolean; size: number | null; mtime?: number; runtime_readonly?: boolean; run_id?: string; unavailable?: string }[] = [];
     for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
       if (workspaceMode() && entry.isSymbolicLink()) continue;
       if (entry.name.startsWith('.') && entry.name !== '.env') continue;
@@ -870,6 +872,16 @@ function serveFileList(res: ServerResponse, dirPath: string, workspace?: Workspa
         const stat = fs.statSync(fullPath);
         items.push({ name: entry.name, path: workspace ? toPiPath(workspace, fullPath, 'files') : fullPath, isDirectory: entry.isDirectory(), size: entry.isDirectory() ? null : stat.size, mtime: stat.mtimeMs });
       } catch {}
+    }
+    if (workspace && dirPath === path.resolve(workspace.paths.files)) {
+      for (let i = items.length - 1; i >= 0; i--) if (RUNTIME_FILES.some(name => name === items[i].name)) items.splice(i, 1);
+      const runtimeItems = await Promise.all(RUNTIME_FILES.map(async name => {
+        const item = { name, path: `/workspace/${name}`, isDirectory: false, runtime_readonly: true, run_id: session?.run?.run_id, size: null as number | null, unavailable: '' };
+        try { item.size = (await readRuntimeFile(session, name)).bytes.length; }
+        catch (error) { item.unavailable = errorMessage(error); }
+        return item;
+      }));
+      items.push(...runtimeItems);
     }
     items.sort((a, b) => a.isDirectory !== b.isDirectory ? (a.isDirectory ? -1 : 1) : a.name.localeCompare(b.name));
     json(res, 200, { path: workspace ? toPiPath(workspace, dirPath, 'files') : dirPath, items });

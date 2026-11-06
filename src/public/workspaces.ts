@@ -83,9 +83,23 @@ export function setupWorkspaces(cwdInput: HTMLInputElement) {
   setInterval(() => { if (document.visibilityState === 'visible') void refreshWorkspaces().then(update); }, 5000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void refreshWorkspaces().then(update); });
 }
-export function downloadWorkspaceFile(sessionId: string, file: string) {
+export async function downloadWorkspaceFile(sessionId: string, file: string, runId?: string) {
   const link = document.createElement('a');
-  link.href = `/api/file/download?${new URLSearchParams({ sessionId, path: file })}`;
+  const params = new URLSearchParams({ sessionId, path: file });
+  if (runId) params.set('run_id', runId);
+  link.href = `/api/file/download?${params}`;
+  if (runId) {
+    const response = await fetch(link.href);
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || 'Runtime file download failed');
+    }
+    link.href = URL.createObjectURL(await response.blob());
+    link.download = file.split('/').pop() || '';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    return;
+  }
   link.download = '';
   link.click();
 }

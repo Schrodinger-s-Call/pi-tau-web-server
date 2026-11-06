@@ -31,6 +31,8 @@ type FileItem = {
   isDirectory: boolean;
   size?: number | null;
   mtime?: number;
+  runtime_readonly?: boolean;
+  unavailable?: string;
 };
 
 export function getFileIcon(name: string, isDirectory: boolean) {
@@ -148,7 +150,14 @@ export class FileBrowser {
       nameEl.textContent = item.name;
       const sizeEl = document.createElement('span');
       sizeEl.className = 'file-size';
-      sizeEl.textContent = size;
+      sizeEl.textContent = item.unavailable ? 'Unavailable' : size;
+      if (item.runtime_readonly) {
+        const badge = document.createElement('span');
+        badge.className = 'runtime-file-label';
+        badge.textContent = '运行时只读文件';
+        nameEl.append(document.createElement('br'), badge);
+        el.title = item.unavailable || '运行时只读文件';
+      }
       el.append(iconEl, nameEl, sizeEl);
       el.tabIndex = 0;
       el.setAttribute('role', 'button');

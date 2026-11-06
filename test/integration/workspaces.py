@@ -55,6 +55,30 @@ async def main():
             assert record['seq']==0 and a['pi_session_id']==record['session_id']
             assert a['run']['actual_bundle']['name']=='v1'
             print('PASS ready with delayed new history and persisted seq 0',flush=True)
+            async def runtime_files(env, session):
+                status, listing = await request(env, '/api/files?sessionId='+session['id']+'&path=/workspace')
+                assert status == 200, listing
+                result = {}
+                for name in ('AGENTS.md', 'RUNTIME.json'):
+                    query = '?sessionId='+session['id']+'&path=/workspace/'+name+'&run_id='+session['run']['run_id']
+                    status, preview = await request(env, '/api/file/text'+query)
+                    assert status == 200 and preview['runtime_readonly'] and preview['run_id'] == session['run']['run_id'], preview
+                    status, downloaded = await request(env, '/api/file/download'+query, raw=True)
+                    mounted_base64 = await podman('exec', 'gpas-tau-pi-'+session['run']['run_id'], 'base64', '/workspace/'+name)
+                    mounted = base64.b64decode(mounted_base64).decode('utf-8')
+                    assert status == 200 and downloaded == preview['text'] == mounted, (name, preview, mounted)
+                    item = next(item for item in listing['items'] if item['name'] == name)
+                    assert item['runtime_readonly'] and item['size'] == len(downloaded.encode()), item
+                    result[name] = downloaded
+                assert json.loads(result['RUNTIME.json'])['session_id'] == session['run']['run_id']
+                return result
+            original_runtime = await runtime_files(alice, a)
+            await runtime_files(alice, b)
+            await runtime_files(bob, other)
+            assert (await request(alice, '/api/file/text?sessionId='+a['id']+'&workspace_id=exp1&path=/workspace/AGENTS.md'))[0] == 400
+            assert (await request(bob, '/api/file/text?sessionId='+a['id']+'&path=/workspace/AGENTS.md'))[0] == 400
+            print('PASS runtime list, preview, and download match real Pi mounted bytes', flush=True)
+
             status,models=await request(alice,'/api/rpc',{'type':'get_available_models','workspace_id':'debug'})
             assert status==200 and models['success'], models
             print('PASS real short command started/completed and model output',flush=True)
@@ -92,7 +116,8 @@ async def main():
                 changed=alice.records.get(a['run']['run_id'])
                 if changed['seq']>=1: break
             assert changed['seq']>=1 and changed['session_id']!=record['session_id'],changed
-            print('PASS real fork identity persisted by run_tau',flush=True)
+            assert await runtime_files(alice, a) == original_runtime
+            print('PASS real fork identity persisted by run_tau and runtime files remain unchanged',flush=True)
             await rpc(a,'prompt',message='/fixture-new-history')
             await rpc(a,'prompt',message='persist extension history')
             for _ in range(100):
@@ -100,13 +125,26 @@ async def main():
                 extension_record=alice.records.get(a['run']['run_id'])
                 if extension_record['seq']>changed['seq']: break
             assert extension_record['seq']>changed['seq'] and extension_record['session_id']!=changed['session_id'],extension_record
-            print('PASS extension-driven new history and delayed persistence',flush=True)
+            assert await runtime_files(alice, a) == original_runtime
+            print('PASS extension-driven new history and unchanged runtime files',flush=True)
+            await rpc(a, 'switch_session', sessionPath=record['session_file'])
+            for _ in range(100):
+                await asyncio.sleep(.1)
+                switched = alice.records.get(a['run']['run_id'])
+                if switched['session_id'] == record['session_id']: break
+            assert switched['session_id'] == record['session_id'] and switched['seq'] > extension_record['seq'], switched
+            assert await runtime_files(alice, a) == original_runtime
+            print('PASS switching history updates run-info while original runtime bytes remain unchanged', flush=True)
             browser = await asyncio.create_subprocess_exec('node', str(Path(__file__).with_name('workspace-browser.ts')), f'http://127.0.0.1:{alice.cfg["port"]}', a['id'], a['run']['run_id'])
             assert await browser.wait()==0
             workspaces.switch(root,'alice','exp1','v2')
             new=await create(alice,'exp1')
             assert new['run']['actual_bundle']['name']=='v2' and alice.records.get(b['run']['run_id'])['actual_bundle']['name']=='v1'
-            print('PASS current bundle update preserves active run version',flush=True)
+            old_files = await runtime_files(alice, b)
+            new_files = await runtime_files(alice, new)
+            assert old_files['AGENTS.md'] == 'Offline fixture only.'
+            assert new_files['AGENTS.md'] == 'Offline version two.'
+            print('PASS current bundle update preserves old runtime files while new run uses v2',flush=True)
             status,current=await request(alice,'/api/live-sessions')
             active=next(item for item in current['sessions'] if item['id']==a['id'])
             status,reused=await request(alice,'/api/live-sessions/resume',{'workspace_id':'debug','filePath':active['sessionFile']})
@@ -115,6 +153,7 @@ async def main():
             for _ in range(100):
                 if alice.records.get(a['run']['run_id'])['state']!='running': break
                 await asyncio.sleep(.1)
+            assert (await request(alice, '/api/file/download?sessionId='+a['id']+'&path=/workspace/AGENTS.md'))[0] == 400
             status,resumed=await request(alice,'/api/live-sessions/resume',{'workspace_id':'debug','filePath':active['sessionFile']})
             assert status==200 and resumed['session']['run']['run_id']!=a['run']['run_id'],resumed
             assert resumed['session']['pi_session_id']==active['pi_session_id']

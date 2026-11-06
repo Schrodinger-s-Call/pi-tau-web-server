@@ -111,3 +111,19 @@ cleanup. Logs are /tmp/tau-image-model-{tests,e2e,joint,build}.log.
 The local 1.2.1-dev image is now
 4c1dabf5ac3aacaaee6852bdf095a41fdba1bc6ce43c0730de626489f1f09154.
 No existing deployment was restarted or replaced.
+
+## Runtime file image and joint acceptance (2026-11-06)
+
+Image localhost/pi-tau-web-server:1.2.1-dev:
+562cbf094acd38cd53bfe108d97e7d9b42393f5f520c398d3d8aca08c45b18e2.
+
+The updated run_tau implementation and rebuilt Tau passed isolated real Pi and
+Chromium acceptance for runtime file listing, preview, and download. Both files
+matched mounted bytes; fork, new history, and explicit switching preserved the
+runtime files while run-info tracked current history. Old v1 and new v2 runs
+returned their respective instructions. Sidebar switching and reconnects kept
+file ownership; cross-user, mismatched workspace, and stopped-session requests
+were rejected. See docs/runtime-files-handoff.md for evidence and scope.
+
+Existing deployments were not restarted, migrated, or replaced. The image is
+local only. The user confirmed that the updated behavior is active.

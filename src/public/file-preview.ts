@@ -15,7 +15,7 @@ async function copyText(text: string) {
   }
 }
 
-type FileTab = { sessionId: string; path: string };
+type FileTab = { sessionId: string; path: string; runId?: string };
 
 /** File tabs belong to a live session and show only while that session is selected. */
 export class FilePreview {
@@ -121,7 +121,17 @@ export class FilePreview {
       return element;
     };
     button('Add to message', () => { this.hide(); this.insert(path); });
-    if (workspaceEnabled) button('Download', () => downloadWorkspaceFile(sessionId, path));
+    const runtime = workspaceEnabled && /^\/workspace\/(AGENTS\.md|RUNTIME\.json)$/.test(path);
+    if (runtime) {
+      const badge = document.createElement('span');
+      badge.className = 'runtime-file-label';
+      badge.textContent = '运行时只读文件';
+      toolbar.append(badge);
+    }
+    const download = workspaceEnabled ? button('Download', () => {
+      void downloadWorkspaceFile(sessionId, path, file.runId).catch(error => { status.textContent = error.message; });
+    }) : null;
+    if (download && runtime) download.disabled = true;
     button('Refresh', () => { void this.open(path, sessionId); });
     button('Back to chat', () => this.hide());
     const status = document.createElement('p');
@@ -133,13 +143,19 @@ export class FilePreview {
     this.panel.append(toolbar, status, content);
     try {
       const params = new URLSearchParams({ sessionId, path });
+      if (file.runId) params.set('run_id', file.runId);
       const response = await fetch(`/api/file/text?${params}`, { signal: this.controller.signal });
       const data = await response.json();
       if (revision !== this.revision) return;
       if (!response.ok) throw new Error(data.error || 'Failed to read file');
       if (typeof data.text !== 'string' || data.text.length > 256 * 1024) throw new Error('File exceeds the preview limit');
+      if (runtime) {
+        if (!data.runtime_readonly || typeof data.run_id !== 'string') throw new Error('Runtime file unavailable: server did not identify its Pi run');
+        file.runId = data.run_id;
+        if (download) download.disabled = false;
+      }
       const source: string = data.text;
-      status.textContent = 'Read-only · UTF-8 · Files up to 256 KiB';
+      status.textContent = runtime ? '运行时只读文件 · UTF-8 · Files up to 128 KiB' : 'Read-only · UTF-8 · Files up to 256 KiB';
       button('Copy', () => {
         void copyText(source).then(() => {
           status.textContent = 'Copied';

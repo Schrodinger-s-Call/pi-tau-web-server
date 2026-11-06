@@ -277,3 +277,69 @@ test('invalid encodings, carriage returns, arrays, and unknown control fields ar
   assert.throws(() => validateControl({ type: 'result', protocol_version: 1, revision: 0, workspaces: [] }));
   assert.throws(() => validateControl({ type: 'workspaces', protocol_version: 1, revision: true, workspaces: [] }));
 });
+
+test('runtime files use the live run for listing, preview, and download without placeholder fallback', async t => {
+  const f = await fixture(t);
+  const { liveManager } = await import('../bin/tau.js') as any;
+  const w = f.workspaces[0];
+  for (const name of ['AGENTS.md', 'RUNTIME.json']) fs.writeFileSync(path.join(w.paths.files, name), '');
+  fs.mkdirSync(path.join(w.paths.files, 'nested'));
+  fs.writeFileSync(path.join(w.paths.files, 'nested/AGENTS.md'), 'ordinary nested instructions');
+  _setSpawnPiForTest(() => fakeChild(w, 'd'.repeat(32)));
+  const live = await liveManager.create({ workspace_id: 'debug' });
+  t.after(async () => { await live.terminate(); liveManager.sessions.delete(live.id); });
+  let mode = 'ok';
+  f.setRespond((request: any) => {
+    if (request.type === 'workspaces') return { type: 'workspaces', protocol_version: 1, revision: 2, workspaces: f.workspaces } as any;
+    if (mode === 'unsupported') return { type: 'error', protocol_version: 1, code: 'PROTOCOL_ERROR', message: 'Unsupported request' } as any;
+    if (mode === 'stopped-during-read') live.terminating = true;
+    if (mode === 'replaced-during-read') live.child = { ...live.child };
+    const bytes = mode === 'invalid-utf8' ? Buffer.from([255]) : Buffer.from(request.name === 'AGENTS.md' ? 'Frozen v1 instructions\n' : '{"startup_time":"run A"}\n');
+    return { type: 'run-file', protocol_version: 1, run_id: mode === 'wrong-run' ? 'e'.repeat(32) : request.run_id,
+      workspace_id: mode === 'wrong-workspace' ? 'exp1' : request.workspace_id, name: request.name,
+      actual_bundle: { ...bundle, name: mode === 'wrong-bundle' ? 'two' : 'one' }, size: mode === 'oversized' ? 131073 : mode === 'wrong-size' ? bytes.length + 1 : bytes.length, content_base64: bytes.toString('base64') } as any;
+  });
+  w.current_bundle = { ...bundle, name: 'two' };
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const request = (route: string, extra: Record<string, string> = {}) => fetch(`${base}${route}?${new URLSearchParams({ sessionId: live.id, path: '/workspace/AGENTS.md', ...extra })}`);
+  const list = await (await request('/api/files', { path: '/workspace' })).json() as any;
+  const agents = list.items.find((item: any) => item.name === 'AGENTS.md');
+  assert.equal(agents.size, Buffer.byteLength('Frozen v1 instructions\n'));
+  assert.equal(agents.runtime_readonly, true);
+  for (const name of ['AGENTS.md', 'RUNTIME.json']) {
+    const preview = await (await request('/api/file/text', { path: `/workspace/${name}` })).json() as any;
+    assert.equal(preview.run_id, live.run.run_id);
+    assert.equal(preview.runtime_readonly, true);
+    const download = await request('/api/file/download', { path: `/workspace/${name}`, run_id: preview.run_id });
+    assert.equal(download.status, 200);
+    assert.equal(await download.text(), preview.text);
+  }
+  assert.equal((await request('/api/file/download', { run_id: 'e'.repeat(32) })).status, 400);
+  assert.equal((await request('/api/file/text', { workspace_id: 'exp1' })).status, 400);
+  assert.equal((await request('/api/file/text', { path: '/workspace/../AGENTS.md' })).status, 400);
+  const nested = await (await request('/api/file/text', { path: '/workspace/nested/AGENTS.md' })).json() as any;
+  assert.equal(nested.text, 'ordinary nested instructions');
+  for (mode of ['wrong-run', 'wrong-workspace', 'wrong-bundle', 'wrong-size', 'oversized', 'invalid-utf8', 'unsupported']) {
+    for (const route of ['/api/file/text', '/api/file/download', '/api/file/preview']) assert.equal((await request(route)).status, 400);
+  }
+  const unavailable = await (await request('/api/files', { path: '/workspace' })).json() as any;
+  const item = unavailable.items.find((item: any) => item.name === 'AGENTS.md');
+  assert.equal(item.size, null);
+  assert.match(item.unavailable, /run_tau does not support/);
+  mode = 'ok';
+  const withoutSession = await fetch(`${base}/api/file/download?workspace_id=debug&path=/workspace/AGENTS.md`);
+  assert.equal(withoutSession.status, 400);
+  assert.match((await withoutSession.json() as any).error, /active Pi run/);
+  const originalChild = live.child;
+  mode = 'replaced-during-read';
+  assert.equal((await request('/api/file/text')).status, 400);
+  live.child = originalChild;
+  mode = 'stopped-during-read';
+  assert.equal((await request('/api/file/text')).status, 400);
+  assert.equal(live.terminating, true);
+  assert.equal((await request('/api/file/text')).status, 400);
+  live.terminating = false;
+  assert.ok(f.requests.filter(r => r.type === 'run-file').every(r => r.run_id === live.run.run_id && r.workspace_id === 'debug'));
+});

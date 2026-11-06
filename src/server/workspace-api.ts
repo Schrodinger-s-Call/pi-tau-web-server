@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { readRuntimeFile, runtimeFileName } from './runtime-files.js';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { liveManager } from './sessions.js';
@@ -33,6 +34,27 @@ function sessionSummary(w: Workspace, file: string) {
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL, readBody: (req: IncomingMessage) => Promise<RpcCommand>): Promise<boolean> {
   const route = url.pathname;
   const parameter = url.searchParams.get('workspace_id');
+  if (req.method === 'GET' && ['/api/file/text', '/api/file/download', '/api/file/preview'].includes(route) && !(route === '/api/file/download' && url.searchParams.get('history') === '1')) {
+    const sessionId = url.searchParams.get('sessionId');
+    const live = sessionId ? liveManager.get(sessionId) : undefined;
+    if (sessionId && !live) throw new Error('Runtime file unavailable: live session not found');
+    if (live && parameter && live.workspace?.workspace_id !== parameter) throw new Error('Workspace does not match the live session');
+    if (live?.workspace || parameter) {
+      const w = live?.workspace || await requireWorkspace(parameter);
+      const name = runtimeFileName(w, url.searchParams.get('path') || '');
+      if (name) {
+        const expectedRun = url.searchParams.get('run_id');
+        if (expectedRun && expectedRun !== live?.run?.run_id) throw new Error('Runtime file unavailable: run does not match the selected session');
+        const file = await readRuntimeFile(live, name);
+        if (route === '/api/file/text') json(res, 200, { text: file.text, run_id: file.run_id, workspace_id: file.workspace_id, runtime_readonly: true });
+        else {
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+          res.end(file.bytes);
+        }
+        return true;
+      }
+    }
+  }
   if (route === '/api/workspaces') { json(res, 200, { enabled: true, ...(await listWorkspaces()) }); return true; }
   if (route === '/api/run-info') {
     const run_id = url.searchParams.get('run_id');

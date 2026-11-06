@@ -48,6 +48,28 @@ try {
   await page.locator('.workspace-version').filter({ hasText: 'Running: v1' }).waitFor();
   const sessions = await (await context.request.get(base + '/api/live-sessions')).json();
   assert.equal(sessions.sessions.find((s: any) => s.id === sessionId)?.run.run_id, runId);
+  await page.click('#file-sidebar-toggle');
+  for (const name of ['AGENTS.md', 'RUNTIME.json']) {
+    const item = page.locator(`.file-item[data-name="${name}"]`);
+    await item.waitFor();
+    assert.match(await item.textContent() || '', /运行时只读文件/);
+    assert.doesNotMatch(await item.textContent() || '', /Unavailable|0B/);
+    await item.click();
+    await page.waitForFunction(() => !!document.querySelector('#file-preview button') && [...document.querySelectorAll<HTMLButtonElement>('#file-preview button')].some(b => b.textContent === 'Download' && !b.disabled));
+    assert.match(await page.locator('.file-preview-toolbar').textContent() || '', /运行时只读文件/);
+    const expected = await (await context.request.get(base + '/api/file/text?' + new URLSearchParams({ sessionId, path: '/workspace/' + name, run_id: runId }))).json();
+    if (name === 'RUNTIME.json') assert.equal(JSON.parse(await page.locator('.file-preview-source').textContent() || '').session_id, runId);
+    else assert.ok((await page.locator('.file-preview-content').textContent())?.includes('Offline fixture only.'));
+    await page.locator('#sidebar > .workspace-select').selectOption('exp1');
+    const downloading = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download', exact: true }).click();
+    const download = await downloading;
+    const stream = await download.createReadStream();
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    assert.equal(Buffer.concat(chunks).toString(), expected.text);
+  }
+  console.log('PASS real browser runtime file labels, previews, and downloads remain scoped after sidebar switching');
   assert.deepEqual(errors, []);
   await context.close();
   console.log('PASS real browser workspace selection, reload, and WebSocket reconnect retain the Pi run');

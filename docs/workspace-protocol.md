@@ -121,3 +121,8 @@ External image URLs and embedded image data keep their existing handling.
 
 Model queries for a live session use that session's Pi process and preserve the
 client request ID in the response, including over WebSocket.
+
+Runtime-mounted root files AGENTS.md and RUNTIME.json are resolved through the
+owning live run using the restricted run-file query. The adapter contract and
+pending runtime acceptance checks are in runtime-files-handoff.md. Tau never
+uses workspace placeholder bytes or the current bundle reference for these files.
