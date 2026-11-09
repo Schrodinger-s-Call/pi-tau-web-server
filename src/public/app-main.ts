@@ -216,6 +216,7 @@ let lastSentMessage: string | null = null; // Track to avoid duplicate rendering
 let lastUsage: UsageRecord | null = null; // Full usage object for context visualiser
 let activeLiveSessionFile: string | null = null; // The active live session file path
 let viewingActiveSession = false; // Whether we're viewing a live backend Tau tab or historical read-only session
+let viewingHistoryWorkspaceId: string | undefined;
 let hasReceivedInitialServerState = false;
 let liveSessions: LiveSession[] = [];
 let activeLiveSessionId = localStorage.getItem('tau-active-live-session-id') || null;
@@ -263,8 +264,8 @@ const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput, (fi
 }, () => (viewingActiveSession && liveSessions.some(s => s.id === activeLiveSessionId) ? activeLiveSessionId : null));
 
 messageRenderer.fileContext = () => {
-  const live = liveSessions.find(s => s.id === activeLiveSessionId);
-  return live?.workspace_id ? live.workspace_id : undefined;
+  const live = viewingActiveSession ? liveSessions.find(s => s.id === activeLiveSessionId) : undefined;
+  return live?.workspace_id || viewingHistoryWorkspaceId;
 };
 const filePreview = new FilePreview(() => renderLiveTabs(), path => fileBrowser.insertPath(path));
 fileBrowser.onPreview = path => {
@@ -786,6 +787,9 @@ async function selectLiveSession(id: string) {
   parkedViews.delete(id);
   suspendCurrentDialogForTabSwitch(id);
   launcherPanel.hide();
+  viewingHistoryWorkspaceId = sidebar.projects.find(project =>
+    session.sessionFile && project.sessions?.some(history => history.filePath === session.sessionFile))?.workspace_id;
+  messageRenderer.historyWorkspaceId = session.workspace_id || viewingHistoryWorkspaceId;
   activeLiveSessionId = id;
   localStorage.setItem('tau-active-live-session-id', id);
   viewingActiveSession = true;
@@ -2318,6 +2322,8 @@ async function switchSession(sessionFile: string | null | undefined, session: Si
     retryStatusElement = null;
     dialogHandler.clearCurrentDialog();
     viewingActiveSession = false;
+    viewingHistoryWorkspaceId = sessionFile ? project?.workspace_id || session?.workspace_id : undefined;
+    messageRenderer.historyWorkspaceId = viewingHistoryWorkspaceId;
     
     state.reset();
     showTypingIndicator(false);
@@ -2604,6 +2610,7 @@ function renderHistoryItem(item: HistoryItem, target: ParentNode) {
 }
 
 function renderSessionHistory(entries: SessionHistoryEntry[], older: Pick<OlderHistory, 'sessionId' | 'epoch' | 'end'> | null = null) {
+  messageRenderer.historyWorkspaceId = messageRenderer.fileContext?.();
   const { items, totalCost, lastInputTokens: builtInputTokens, contextTokensEstimated: builtEstimated, lastUsage: builtUsage } = buildHistoryItems(entries);
   console.log(`[History] Rendering ${items.length} items from ${entries.length} entries`);
   rememberHistoryToolCalls(items);

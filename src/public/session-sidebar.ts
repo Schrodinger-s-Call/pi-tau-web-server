@@ -7,6 +7,7 @@ import { isImeComposition } from './keyboard.js';
 import { arrangeProjects, type ArrangedProject, type OpenTab } from './session-order.js';
 
 export type SidebarSession = {
+  workspace_id?: string;
   filePath?: string;
   file?: string;
   name?: string | null;
@@ -21,6 +22,7 @@ export type SidebarSession = {
 };
 
 export type SidebarProject = {
+  workspace_id?: string;
   path?: string;
   dirName?: string;
   sessions?: SidebarSession[];

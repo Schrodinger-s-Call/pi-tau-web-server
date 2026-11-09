@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setupHistoryE2E, skipUnlessBrowser, openNestedPage, liveManager, assertNoPageErrors } from './history-harness.ts';
+import { setupHistoryE2E, skipUnlessBrowser, openNestedPage, liveManager, assertNoPageErrors, writeSession, openPage, sessionItemSelector } from './history-harness.ts';
 setupHistoryE2E();
 
 test('workspace selection cannot change a conversation report link or its running bundle', async t => {
@@ -99,5 +99,83 @@ test('runtime file previews and downloads retain their run and explain unavailab
   await unavailable.click();
   await page.waitForFunction(() => document.querySelector('.file-preview-status')?.textContent?.includes('run_tau does not support'));
   assert.equal(await page.getByRole('button', { name: 'Download', exact: true }).isDisabled(), true);
+  await assertNoPageErrors(errors);
+});
+
+test('history files keep their project workspace without a live session', async t => {
+  if (skipUnlessBrowser(t)) return;
+  const { page } = await openNestedPage(t, { blockServiceWorkers: true });
+  await page.route('**/api/file/image?**', route => route.fulfill({
+    contentType: 'image/png',
+    body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO1sAAAAASUVORK5CYII=', 'base64'),
+  }));
+  await page.route('**/api/file/download?**', route => route.fulfill({
+    contentType: 'text/plain', body: 'Report contents',
+  }));
+  const results = await page.evaluate(async () => {
+    const { MessageRenderer } = await import(String('/message-renderer.js'));
+    const container = document.createElement('div');
+    container.id = 'history-files-test';
+    document.body.append(container);
+    const renderer = new MessageRenderer(container);
+    const message = { content: '[Report](output/reports/x.md) ![Chart](output/chart.png)' };
+    renderer.historyWorkspaceId = 'project-a';
+    renderer.renderAssistantMessage(message, false, true);
+    renderer.historyWorkspaceId = 'project-b';
+    renderer.renderUserMessage(message, true);
+    renderer.fileContext = () => 'live-project';
+    renderer.renderAssistantMessage(message);
+    renderer.historyWorkspaceId = undefined;
+    renderer.fileContext = undefined;
+    renderer.renderAssistantMessage(message, false, true);
+    return [...container.children].map(element => ({
+      workspace: (element as HTMLElement).dataset.workspaceId,
+      href: element.querySelector('a')?.getAttribute('href'),
+      src: element.querySelector('img')?.getAttribute('src'),
+    }));
+  });
+  for (const [index, workspace] of ['project-a', 'project-b', 'live-project'].entries()) {
+    assert.equal(results[index].workspace, workspace);
+    const href = new URL(results[index].href!, page.url());
+    assert.equal(href.pathname, '/api/file/download');
+    assert.equal(href.searchParams.get('workspace_id'), workspace);
+    assert.equal(href.searchParams.get('path'), 'output/reports/x.md');
+    const src = new URL(results[index].src!, page.url());
+    assert.equal(src.pathname, '/api/file/image');
+    assert.equal(src.searchParams.get('workspace_id'), workspace);
+    await page.locator('#history-files-test > .message').nth(index).locator('img').evaluate((image: HTMLImageElement) => image.decode());
+  }
+  assert.equal(results[3].workspace, undefined);
+  assert.equal(results[3].href, 'output/reports/x.md');
+  const downloaded = page.waitForEvent('download');
+  await page.locator('#history-files-test a').first().click();
+  assert.equal(new URL((await downloaded).url()).searchParams.get('workspace_id'), 'project-a');
+});
+
+
+test('opening history uses its project when the resumed tab has no workspace metadata', async t => {
+  if (skipUnlessBrowser(t)) return;
+  const files = ['a', 'b'].map(id => writeSession(`workspace-history-${id}.jsonl`, [
+    { type: 'session', id: `workspace-history-${id}`, cwd: '/tmp', timestamp: '2026-01-03T00:00:00.000Z' },
+    { type: 'message', message: { role: 'assistant', content: '[Report](output/report.md)' } },
+  ]));
+  const { page, errors } = await openPage(t, { blockServiceWorkers: true });
+  await page.route('**/api/sessions?*', route => route.fulfill({ json: { projects: files.map((filePath, index) => ({
+    workspace_id: `history-${index}`, name: `Project ${index}`, path: '/tmp',
+    sessions: [{ filePath, name: `History ${index}` }],
+  })) } }));
+  await page.route('**/api/live-sessions/resume', async route => {
+    const body = route.request().postDataJSON();
+    delete body.workspace_id;
+    const response = await route.fetch({ postData: body });
+    await route.fulfill({ response });
+  });
+  await page.reload();
+  for (const [index, file] of files.entries()) {
+    await page.click(sessionItemSelector(file));
+    const report = page.locator('#messages a').filter({ hasText: 'Report' });
+    await report.waitFor({ timeout: 5000 });
+    assert.equal(new URL((await report.getAttribute('href'))!, page.url()).searchParams.get('workspace_id'), `history-${index}`);
+  }
   await assertNoPageErrors(errors);
 });
